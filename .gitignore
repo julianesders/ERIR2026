@@ -63,6 +63,10 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
+# ── Local config ──────────────────────────────────────────────────────────────
+
+wd/config.py
+
 # ── Exceptions ────────────────────────────────────────────────────────────────
 # Uncomment or add lines here to force-track specific files despite rules above.
 

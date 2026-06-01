@@ -8,6 +8,7 @@ Usage:
     python main.py --step 4   # resume from step 4 onwards
 """
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -41,7 +42,9 @@ def run(label: str, script: Path) -> None:
     print(f"  Script: {script.relative_to(Path(__file__).parent)}")
     print(f"{'─'*60}")
     t0 = time.time()
-    subprocess.run([sys.executable, str(script)], check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).parent) + os.pathsep + env.get("PYTHONPATH", "")
+    subprocess.run([sys.executable, str(script)], check=True, env=env)
     print(f"\n  Done in {time.time() - t0:.1f}s")
 
 

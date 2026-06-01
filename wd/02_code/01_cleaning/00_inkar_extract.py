@@ -1,6 +1,6 @@
 import pandas as pd
 
-BASE_PATH   = "/Users/julian/Documents/ERIR2026/wd"
+from config import BASE_PATH
 INKAR_FILE  = f"{BASE_PATH}/01_data/05_inkar_raw/inkar_2025.csv"
 OUT_FILE = f"{BASE_PATH}/01_data/02_intermediate/inkar/inkar_joint_panel.csv"
 

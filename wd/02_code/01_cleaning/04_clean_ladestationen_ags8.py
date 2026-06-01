@@ -1,7 +1,7 @@
 import pandas as pd
 import geopandas as gpd
 
-BASE_PATH             = "/Users/julian/Documents/ERIR2026/wd"
+from config import BASE_PATH
 DATA_DIR_RAW          = f"{BASE_PATH}/01_data/01_raw"
 DATA_DIR_INTERMEDIATE = f"{BASE_PATH}/01_data/02_intermediate"
 GPKG_PATH = (
