@@ -1,0 +1,22 @@
+# ERIR2026 – direct Python dependencies
+# Install into the project venv:
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+
+# Core data
+pandas==3.0.0
+numpy==2.4.2
+scipy==1.17.0
+openpyxl==3.1.5
+
+# Geospatial
+geopandas==1.1.3
+libpysal==4.14.1
+
+# Entity linkage (pulls in torch, transformers, sentence-transformers)
+linktransformer==0.1.18
+
+# LLM classification
+anthropic==0.86.0
+python-dotenv==1.2.2

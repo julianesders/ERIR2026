@@ -1,0 +1,71 @@
+# ── Data ──────────────────────────────────────────────────────────────────────
+# Raw, intermediate, and final data files are not tracked.
+# Add explicit exceptions below if specific files should be committed.
+
+wd/01_data/
+wd/03_output/
+
+# ── Large source files ────────────────────────────────────────────────────────
+
+*.xlsx
+*.csv
+*.gpkg
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+*.json
+*.geojson
+*.parquet
+*.feather
+
+# ── Python ────────────────────────────────────────────────────────────────────
+
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.ipynb_checkpoints/
+*.ipynb
+
+# ── R ─────────────────────────────────────────────────────────────────────────
+
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+
+.env
+.env.*
+*.key
+*.pem
+secrets.*
+
+# ── Binary documents ──────────────────────────────────────────────────────────
+
+*.pdf
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── Exceptions ────────────────────────────────────────────────────────────────
+# Uncomment or add lines here to force-track specific files despite rules above.
+
+# !wd/01_data/01_raw/crosswalks/ref-kreise-1990-2024.xlsx
+# !wd/01_data/01_raw/crosswalks/ref-gemeinden-2020-2024.xlsx
+# !wd/01_data/02_intermediate/anschriftenverzeichnis/anschriftenverzeichnis_ags8.csv
