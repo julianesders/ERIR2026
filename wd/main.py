@@ -2,8 +2,9 @@
 ERIR2026 pipeline runner.
 
 Usage:
-    python main.py            # run full pipeline (INKAR extract and scraping skipped)
+    python main.py            # run full pipeline (INKAR, KBA, scraping skipped)
     python main.py --inkar    # re-extract INKAR from source (slow, large file)
+    python main.py --kba      # include KBA steps (requires delivery files on K: drive)
     python main.py --scrape   # include the EMK scraping step (slow, network)
     python main.py --step 4   # resume from step 4 onwards
 """
@@ -30,9 +31,11 @@ STEPS = [
     (6,  "Clean Elections (AGS8)",     CODE / "01_cleaning/05_clean_elections_ags8.py",                  None),
     (7,  "Validate AGS8 base panel",   CODE / "01_cleaning/06_build_ags8_base.py",                       None),
     (8,  "Clean Personnel (AGS5)",     CODE / "01_cleaning/07_clean_personal_ags5.py",                   None),
-    (9,  "Match EMK → AGS",            CODE / "02_merging/01_match_emk_ags.py",                          None),
-    (10, "Merge EMK panel (AGS8)",     CODE / "02_merging/02_merge_emk_panel_ags8.py",                   None),
-    (11, "Spatial weights (AGS8)",     CODE / "03_analysis/01_spatial_weights_ags8.py",                  None),
+    (9,  "Unpack & clean KBA (AGS8)", CODE / "01_cleaning/08_clean_kba_ags8.py",                        "kba-only"),
+    (10, "Aggregate KBA variables",   CODE / "01_cleaning/09_aggregate_kba_vars.py",                    "kba-only"),
+    (11, "Match EMK → AGS",            CODE / "02_merging/01_match_emk_ags.py",                          None),
+    (12, "Merge EMK panel (AGS8)",     CODE / "02_merging/02_merge_emk_panel_ags8.py",                   None),
+    (13, "Spatial weights (AGS8)",     CODE / "03_analysis/01_spatial_weights_ags8.py",                  None),
 ]
 
 
@@ -59,6 +62,10 @@ def main() -> None:
         help="Re-extract INKAR variables from source (slow — reads 63M-row file)",
     )
     parser.add_argument(
+        "--kba", action="store_true",
+        help="Include KBA steps (requires delivery files on K: drive)",
+    )
+    parser.add_argument(
         "--step", type=int, default=0,
         help="Resume from this step number (0 = start from beginning)",
     )
@@ -73,7 +80,7 @@ def main() -> None:
             sys.exit(1)
 
     for step_no, label, script, skip_flag in STEPS:
-        if step_no < args.step and skip_flag not in ("scrape-only", "inkar-only"):
+        if step_no < args.step and skip_flag not in ("scrape-only", "inkar-only", "kba-only"):
             print(f"  [skip] Step {step_no}: {label}")
             continue
 
@@ -89,6 +96,13 @@ def main() -> None:
                 run(label, script)
             else:
                 print(f"  [skip] Step {step_no}: {label}  (pass --inkar to re-extract)")
+            continue
+
+        if skip_flag == "kba-only":
+            if args.kba and step_no >= args.step:
+                run(label, script)
+            else:
+                print(f"  [skip] Step {step_no}: {label}  (pass --kba to enable)")
             continue
 
         run(label, script)
