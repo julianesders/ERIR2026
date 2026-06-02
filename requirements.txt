@@ -15,8 +15,8 @@ geopandas>=1.0
 libpysal>=4.10
 
 # Entity linkage (pulls in torch, transformers, sentence-transformers)
-linktransformer==0.1.18
+linktransformer>=0.1.14
 
 # LLM classification
-anthropic==0.86.0
-python-dotenv==1.2.2
+anthropic>=0.50.0
+python-dotenv>=1.0
