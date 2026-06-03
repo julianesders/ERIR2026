@@ -2,6 +2,9 @@ import os
 import zipfile
 import pandas as pd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import BASE_PATH
 DELIVERY     = f"{BASE_PATH}/01_data/00_delivery/kba"
 RAW          = f"{BASE_PATH}/01_data/01_raw/kba"

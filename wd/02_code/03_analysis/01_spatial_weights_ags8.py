@@ -6,6 +6,9 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import BASE_PATH
 DATA_DIR_INTERMEDIATE = f"{BASE_PATH}/01_data/02_intermediate"
 DATA_DIR_FINAL        = f"{BASE_PATH}/01_data/03_final"

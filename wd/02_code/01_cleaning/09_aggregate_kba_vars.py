@@ -1,4 +1,7 @@
 import pandas as pd
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import BASE_PATH
 
 INTERMEDIATE = f"{BASE_PATH}/01_data/02_intermediate/kba"

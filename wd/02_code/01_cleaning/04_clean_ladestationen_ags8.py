@@ -1,6 +1,9 @@
 import pandas as pd
 import geopandas as gpd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import BASE_PATH
 DATA_DIR_RAW          = f"{BASE_PATH}/01_data/01_raw"
 DATA_DIR_INTERMEDIATE = f"{BASE_PATH}/01_data/02_intermediate"

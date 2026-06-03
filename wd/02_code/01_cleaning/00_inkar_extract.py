@@ -1,5 +1,8 @@
 import pandas as pd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import BASE_PATH
 INKAR_FILE  = f"{BASE_PATH}/01_data/05_inkar_raw/inkar_2025.csv"
 OUT_FILE = f"{BASE_PATH}/01_data/02_intermediate/inkar/inkar_joint_panel.csv"
