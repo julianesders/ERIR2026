@@ -6,6 +6,8 @@
 
 # Core data
 pandas>=2.2
+requests>=2.31
+lxml>=4.9
 numpy>=1.26
 scipy>=1.13
 openpyxl>=3.1
