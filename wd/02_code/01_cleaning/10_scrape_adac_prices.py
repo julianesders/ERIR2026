@@ -1,23 +1,19 @@
 """
-Scrape the full ADAC car catalogue for list prices, fuel types, and production
-year windows.  Results are written page-by-page to adac_prices_raw.csv so the
-run can be interrupted and resumed without losing progress.
+Scrape the ADAC car catalogue for list prices and production year windows,
+iterating over motorart (fuel/drive type) values and paginating within each
+until the catalogue is exhausted.
+
+Each row is tagged directly with the motorart and the corresponding KBA
+energiequelle code — no post-hoc Kraftstoff-label mapping needed.
+
+Checkpoint format: "{motorart}:{last_completed_page}" — updated after every
+page so a run can be resumed after interruption without losing progress.
 
 Inputs (optional — used only for coverage reporting at the end):
   kba_neuz_model_panel.csv   (produced by 08_clean_kba_ags8.py)
 
 Output:
   adac_prices_raw.csv
-
-URL strategy
-------------
-ADAC uses opaque brand IDs in its URLs (not human-readable slugs), and the
-brand-filter GET parameter does not filter server-side.  The only reliable
-endpoint is the alphabetical full-catalogue listing:
-  /autosuche/?sort=ALPHABETIC_ASC&type=klassik-autosuche&pageNumber=N
-Pagination continues until a page returns no car rows (~8 000 pages total).
-At REQUEST_DELAY=1.0 s this takes roughly 2–2.5 h; run overnight on the server.
-The checkpoint file lets you resume an interrupted run.
 """
 
 import re
@@ -35,31 +31,25 @@ INTERMEDIATE  = f"{BASE_PATH}/01_data/02_intermediate/kba"
 OUT_CSV       = f"{INTERMEDIATE}/adac_prices_raw.csv"
 CHECKPOINT    = f"{INTERMEDIATE}/adac_scrape_checkpoint.txt"
 
-ADAC_SEARCH   = (
-    "https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle"
-    "/autosuche/?sort=ALPHABETIC_ASC&type=klassik-autosuche"
+ADAC_URL      = (
+    "https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/autosuche/"
 )
+ADAC_PARAMS   = {"sort": "ALPHABETIC_ASC", "type": "klassik-autosuche"}
 REQUEST_DELAY = 1.0   # seconds between requests — be polite
 
 SONSTIGE_FAB_CODE = "000"
 SONSTIGE_MOD_CODE = "0000"
 
-# ── Fuel type mapping: ADAC Kraftstoff label → KBA energiequelle code ─────────
-
-FUEL_MAP: dict[str, str] = {
-    "Super":                    "01",
-    "Super Plus":               "01",
-    "Benzin":                   "01",
-    "Diesel":                   "02",
-    "Strom":                    "04",
-    "Autogas (LPG)":            "03",
-    "Erdgas (CNG)":             "03",
-    "Mildhybrid (Benzin)":      "05",
-    "Mildhybrid (Diesel)":      "05",
-    "Plug-in-Hybrid":           "06",
-    "Plug-in-Hybrid (Benzin)":  "06",
-    "Plug-in-Hybrid (Diesel)":  "06",
-    "Wasserstoff":              "07",
+# motorart URL values in order → KBA energiequelle code
+MOTORART_MAP: dict[str, str] = {
+    "Otto":                  "01",
+    "Diesel":                "02",
+    "Gas":                   "03",
+    "Elektro":               "04",
+    "Hybrid":                "05",
+    "PlugIn-Hybrid":         "06",
+    "Wankel":                "07",
+    "Wasserstoff (E-Motor)": "07",
 }
 
 
@@ -69,11 +59,13 @@ _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; research-scraper)"})
 
 
-def _fetch(url: str) -> lxml_html.HtmlElement | None:
+def _fetch(motorart: str, page: int) -> lxml_html.HtmlElement | None:
+    params = {**ADAC_PARAMS, "motorart": motorart, "pageNumber": page}
     try:
-        resp = _SESSION.get(url, timeout=30)
+        resp = _SESSION.get(ADAC_URL, params=params, timeout=30)
         if resp.status_code == 200:
             return lxml_html.fromstring(resp.content)
+        print(f"    HTTP {resp.status_code}")
     except requests.RequestException as exc:
         print(f"    request error: {exc}")
     return None
@@ -86,7 +78,7 @@ def _parse_year(token: str) -> int | None:
 
 def _parse_price(s: str) -> float | None:
     s = s.replace("€", "").replace("\xa0", "").strip()
-    if not s or s == "-":
+    if not s or s in ("-", "k.A."):
         return None
     try:
         return float(s.replace(".", "").replace(",", "."))
@@ -94,7 +86,11 @@ def _parse_price(s: str) -> float | None:
         return None
 
 
-def _parse_rows(tree: lxml_html.HtmlElement) -> list[dict]:
+def _parse_rows(
+    tree: lxml_html.HtmlElement,
+    motorart: str,
+    energiequelle: str,
+) -> list[dict]:
     rows_out = []
     for row in tree.xpath('//tr[@data-testid="carpages:generation:model:row"]'):
         cells = {td.get("data-th"): td for td in row.xpath(".//td[@data-th]")}
@@ -103,9 +99,8 @@ def _parse_rows(tree: lxml_html.HtmlElement) -> list[dict]:
         if fahrzeug is None:
             continue
 
-        model_raw  = " ".join(fahrzeug.text_content().split())
-        kraftstoff = cells["Kraftstoff"].text_content().strip() if "Kraftstoff" in cells else ""
-        preis_raw  = cells["Listenpreis"].text_content().strip() if "Listenpreis" in cells else ""
+        model_raw = " ".join(fahrzeug.text_content().split())
+        preis_raw = cells["Listenpreis"].text_content().strip() if "Listenpreis" in cells else ""
 
         year_from = year_to = None
         yr = re.search(
@@ -115,14 +110,16 @@ def _parse_rows(tree: lxml_html.HtmlElement) -> list[dict]:
         if yr:
             year_from = _parse_year(yr.group(1))
             year_to   = _parse_year(yr.group(2))
+            if year_to is None:  # "heute" / "present" / "k.A." → still on sale
+                year_to = 9999
 
         model_clean = re.sub(r"\s*\(\d{2}/\d{2}.*?\)\s*$", "", model_raw).strip()
 
         rows_out.append({
             "model_raw":      model_raw,
             "model_clean":    model_clean,
-            "fuel_type_adac": kraftstoff,
-            "energiequelle":  FUEL_MAP.get(kraftstoff),
+            "motorart":       motorart,
+            "energiequelle":  energiequelle,
             "year_from":      year_from,
             "year_to":        year_to,
             "list_price_eur": _parse_price(preis_raw),
@@ -133,56 +130,75 @@ def _parse_rows(tree: lxml_html.HtmlElement) -> list[dict]:
 # ── Resumable scrape ───────────────────────────────────────────────────────────
 
 def scrape_catalogue() -> None:
-    start_page = 1
+    resume_motorart = None
+    resume_page     = 0
+
     if Path(CHECKPOINT).exists():
-        start_page = int(Path(CHECKPOINT).read_text().strip()) + 1
-        print(f"Resuming from page {start_page}  "
-              f"(delete {CHECKPOINT} to restart from scratch)")
+        ckpt = Path(CHECKPOINT).read_text().strip()
+        resume_motorart, _p = ckpt.rsplit(":", 1)
+        resume_page = int(_p)
+        print(f"Resuming from motorart={resume_motorart!r}, next page={resume_page + 1}")
+        print(f"(delete {CHECKPOINT} to restart from scratch)\n")
 
-    mode   = "a" if start_page > 1 else "w"
-    header = (start_page == 1)
-    t0     = time.time()
-    n_rows = 0
+    first_write = not Path(OUT_CSV).exists()
+    skip        = resume_motorart is not None
+    t0          = time.time()
+    total_rows  = 0
 
-    print(f"Scraping ADAC catalogue starting at page {start_page} ...")
-    print(f"Output: {OUT_CSV}\n")
+    for motorart, energiequelle in MOTORART_MAP.items():
 
-    page = start_page
-    while True:
-        url  = f"{ADAC_SEARCH}&pageNumber={page}"
-        tree = _fetch(url)
+        if skip:
+            if motorart == resume_motorart:
+                skip       = False
+                start_page = resume_page + 1
+            else:
+                print(f"Skipping motorart={motorart!r} (already completed)")
+                continue
+        else:
+            start_page = 1
 
-        if tree is None:
-            print(f"Page {page}: fetch failed — stopping.")
-            break
+        print(f"\n── motorart={motorart!r}  energiequelle={energiequelle}  "
+              f"starting at page {start_page} ──")
 
-        rows = _parse_rows(tree)
-        if not rows:
-            print(f"Page {page}: no rows — catalogue exhausted after page {page - 1}.")
-            break
+        page   = start_page
+        n_rows = 0
 
-        df = pd.DataFrame(rows)
-        df.to_csv(OUT_CSV, mode=mode, header=header, index=False, encoding="utf-8-sig")
-        mode   = "a"
-        header = False
-        n_rows += len(rows)
+        while True:
+            tree = _fetch(motorart, page)
 
-        Path(CHECKPOINT).write_text(str(page))
+            if tree is None:
+                print(f"  page {page}: fetch failed — stopping this motorart.")
+                break
 
-        if page % 100 == 0:
-            elapsed = time.time() - t0
-            rate    = (page - start_page + 1) / elapsed
-            print(f"  page {page:>5}  |  {n_rows:>8,} rows  |  "
-                  f"{rate:.1f} pages/s  |  {elapsed/60:.0f} min elapsed",
-                  flush=True)
+            rows = _parse_rows(tree, motorart, energiequelle)
+            if not rows:
+                print(f"  page {page}: empty — motorart exhausted after page {page - 1}.")
+                break
 
-        page += 1
-        time.sleep(REQUEST_DELAY)
+            df = pd.DataFrame(rows)
+            df.to_csv(OUT_CSV, mode="a", header=first_write, index=False, encoding="utf-8-sig")
+            first_write  = False
+            n_rows      += len(rows)
+            total_rows  += len(rows)
+
+            Path(CHECKPOINT).write_text(f"{motorart}:{page}")
+
+            if page % 50 == 0:
+                elapsed = time.time() - t0
+                print(f"  page {page:>4}  |  {n_rows:>6,} rows this motorart  |  "
+                      f"{total_rows:>8,} total  |  {elapsed/60:.0f} min elapsed",
+                      flush=True)
+
+            page += 1
+            time.sleep(REQUEST_DELAY)
+
+        print(f"  motorart={motorart!r} done: {n_rows:,} rows")
 
     if Path(CHECKPOINT).exists():
         Path(CHECKPOINT).unlink()
 
-    print(f"\nScrape complete: {n_rows:,} rows across {page - start_page} pages.")
+    elapsed = time.time() - t0
+    print(f"\nScrape complete: {total_rows:,} total rows in {elapsed/60:.0f} min.")
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────
@@ -210,11 +226,7 @@ else:
     print(f"\nKBA (brand, model) pairs (non-Sonstige): {len(kba_pairs):,}")
     print(f"ADAC rows scraped:                        {len(adac):,}")
     print(f"ADAC unique model_clean values:           {adac['model_clean'].nunique():,}")
-
-    unmapped = (
-        adac[adac["energiequelle"].isna() & adac["fuel_type_adac"].notna()]
-        ["fuel_type_adac"].value_counts()
-    )
-    if not unmapped.empty:
-        print(f"\nUnmapped Kraftstoff labels — add to FUEL_MAP:")
-        print(unmapped.to_string())
+    print(f"\nRows by motorart:")
+    print(adac.groupby("motorart")[["model_clean", "list_price_eur"]]
+          .agg(rows=("model_clean", "count"), with_price=("list_price_eur", "count"))
+          .to_string())
