@@ -135,10 +135,15 @@ def scrape_catalogue() -> None:
 
     if Path(CHECKPOINT).exists():
         ckpt = Path(CHECKPOINT).read_text().strip()
-        resume_motorart, _p = ckpt.rsplit(":", 1)
-        resume_page = int(_p)
-        print(f"Resuming from motorart={resume_motorart!r}, next page={resume_page + 1}")
-        print(f"(delete {CHECKPOINT} to restart from scratch)\n")
+        parts = ckpt.rsplit(":", 1)
+        if len(parts) == 2:
+            resume_motorart, _p = parts
+            resume_page = int(_p)
+            print(f"Resuming from motorart={resume_motorart!r}, next page={resume_page + 1}")
+            print(f"(delete {CHECKPOINT} to restart from scratch)\n")
+        else:
+            print(f"Checkpoint format unrecognised ({ckpt!r}) — starting from scratch.")
+            Path(CHECKPOINT).unlink()
 
     first_write = not Path(OUT_CSV).exists()
     skip        = resume_motorart is not None
