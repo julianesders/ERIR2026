@@ -1,4 +1,7 @@
+import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 import sys
 from pathlib import Path
@@ -32,6 +35,13 @@ elections = pd.read_csv(
     dtype={"AGS8": str},
 )
 elections["AGS8"] = elections["AGS8"].str.zfill(8)
+
+kba = pd.read_csv(
+    f"{DATA_DIR_INTERMEDIATE}/kba/kba_ags8_panel.csv",
+    dtype={"AGS8": str},
+    usecols=["AGS8", "year", "B_elektro_total"],
+)
+kba["AGS8"] = kba["AGS8"].str.zfill(8)
 
 emk = pd.read_csv(
     f"{DATA_DIR_INTERMEDIATE}/emk/emk_ags_matched.csv",
@@ -119,40 +129,97 @@ emk_attrs = emk.groupby("AGS5", as_index=False).agg(**{
 panel = inkar.merge(activity, on=["AGS8", "year"], how="left")
 panel = panel.merge(emk_attrs, on="AGS5", how="left")
 
-# Charging stations at Gemeinde (AGS8) level
+# ── Charging stations (AGS8 level) ────────────────────────────────────────────
+
 panel = panel.merge(ladestationen, on=["AGS8", "year"], how="left")
 panel["ev_stations"]     = panel["ev_stations"].fillna(0).astype(int)
 panel["ev_chargepoints"] = panel["ev_chargepoints"].fillna(0).astype(int)
-
-# Normalised EV rates per 100,000 inhabitants (xbev is Kreis-level, broadcast)
 panel["ev_stations_p100k"]     = panel["ev_stations"]     / panel["xbev"] * 100_000
 panel["ev_chargepoints_p100k"] = panel["ev_chargepoints"] / panel["xbev"] * 100_000
 
-# Elections at Gemeinde level
+# ── BEV stock from KBA Bestand (AGS8 level) ───────────────────────────────────
+
+panel = panel.merge(kba, on=["AGS8", "year"], how="left")
+panel["bev_stock_p100k"] = panel["B_elektro_total"] / panel["xbev"] * 100_000
+panel = panel.drop(columns=["B_elektro_total"])
+
+# ── Derived INKAR variables ───────────────────────────────────────────────────
+
+# Population density (log): population / land area in km²
+panel["log_pop_dens"] = np.log(panel["xbev"] / panel["TN23-kataster_qkm"])
+
+# Steuerkraft squared (q_gest_bev = steuerkraft)
+panel["steuerkraft_sq"] = panel["q_gest_bev"] ** 2
+
+# ── EV ecosystem index: first PC of (bev_stock_p100k, ev_chargepoints_p100k) ─
+
+eco_vars = ["bev_stock_p100k", "ev_chargepoints_p100k"]
+eco_mask = panel[eco_vars].notna().all(axis=1)
+eco_data = panel.loc[eco_mask, eco_vars].values
+
+scaler    = StandardScaler()
+pca       = PCA(n_components=1)
+eco_scores = pca.fit_transform(scaler.fit_transform(eco_data)).ravel()
+
+panel["eco_index"] = np.nan
+panel.loc[eco_mask, "eco_index"] = eco_scores
+
+print(f"\nEco index — PCA explained variance ratio: {pca.explained_variance_ratio_[0]:.1%}")
+print(f"  loadings (bev_stock_p100k, ev_chargepoints_p100k): "
+      f"{pca.components_[0].round(4).tolist()}")
+
+# ── Elections (AGS8 level) ────────────────────────────────────────────────────
+
 panel = panel.merge(elections, on=["AGS8", "year"], how="left")
 
-# Personnel (AGS5 level, broadcast to all Gemeinden in Kreis)
+# ── Personnel (AGS5 level, broadcast to Gemeinden) ───────────────────────────
+
 panel = panel.merge(personal, on=["AGS5", "year"], how="left")
 
 # Fill activity indicators with 0 for never-treated units
 for col in ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]:
     panel[col] = panel[col].fillna(0).astype(int)
 
+# ── Lag variables (within AGS8, year-based) ───────────────────────────────────
+# Using year-based merge: L1 = value at year t-1, etc. Handles gaps correctly.
+
+LAG_VARS = [
+    "q_gest_bev",      # steuerkraft
+    "steuerkraft_sq",
+    "eco_index",
+    "fed_gruene",
+    "state_gruene",
+    "muni_gruene",
+    "n_vze_personal",
+]
+
+panel = panel.sort_values(["AGS8", "year"]).reset_index(drop=True)
+
+for k in [1, 2, 3]:
+    lag_src = panel[["AGS8", "year"] + LAG_VARS].copy()
+    lag_src["year"] = lag_src["year"] + k
+    lag_src = lag_src.rename(columns={c: f"{c}_L{k}" for c in LAG_VARS})
+    panel = panel.merge(lag_src, on=["AGS8", "year"], how="left")
 
 # ── Column order ──────────────────────────────────────────────────────────────
 
-id_cols        = ["AGS8", "AGS5", "year"]
-activity_cols  = ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]
+lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
+derived_cols  = ["log_pop_dens", "steuerkraft_sq", "bev_stock_p100k", "eco_index"]
+id_cols       = ["AGS8", "AGS5", "year"]
+activity_cols = ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]
 ladestation_cols = [
     "ev_stations", "ev_stations_p100k",
     "ev_chargepoints", "ev_chargepoints_p100k",
 ]
-election_cols  = [c for c in elections.columns if c not in ["AGS8", "year"]]
-inkar_cols     = [c for c in inkar.columns if c not in ("AGS8", "AGS5", "year")]
-personal_cols  = ["n_vze_personal"]
-emk_attr_cols  = [c for c in emk_attrs.columns if c not in ["AGS5"] + activity_cols]
+election_cols = [c for c in elections.columns if c not in ["AGS8", "year"]]
+inkar_cols    = [c for c in inkar.columns if c not in ("AGS8", "AGS5", "year")]
+personal_cols = ["n_vze_personal"]
+emk_attr_cols = [c for c in emk_attrs.columns if c not in ["AGS5"] + activity_cols]
 
-panel = panel[id_cols + activity_cols + ladestation_cols + election_cols + inkar_cols + personal_cols + emk_attr_cols]
+panel = panel[
+    id_cols + activity_cols + ladestation_cols + election_cols +
+    inkar_cols + derived_cols + personal_cols + emk_attr_cols + lag_cols_all
+]
 
 panel.to_csv(f"{DATA_DIR_FINAL}/emk_inkar_panel_ags8.csv", index=False)
 
@@ -165,3 +232,5 @@ print(f"  direct project match:    {emk_direct['AGS8'].nunique()}")
 print(f"  Kreis broadcast only:    {emk_kreis_exp[~emk_kreis_exp['AGS8'].isin(emk_direct['AGS8'])]['AGS8'].nunique()}")
 print(f"Never-treated AGS8:        {(panel.groupby('AGS8')['emk_active'].max() == 0).sum()}")
 print(f"Max concurrent projects:   {panel['n_emk_active'].max()}")
+print(f"\nNew derived columns: {derived_cols}")
+print(f"Lag columns ({len(lag_cols_all)}): {lag_cols_all[:6]} ...")

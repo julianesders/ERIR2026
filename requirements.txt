@@ -16,6 +16,9 @@ openpyxl>=3.1
 geopandas>=1.0
 libpysal>=4.10
 
+# ML / dimensionality reduction
+scikit-learn>=1.4
+
 # Entity linkage (pulls in torch, transformers, sentence-transformers)
 linktransformer>=0.1.14
 
