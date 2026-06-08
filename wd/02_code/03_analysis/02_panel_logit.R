@@ -107,24 +107,48 @@ cat(sprintf(
 ))
 
 # -- NA coverage diagnostic ---------------------------------------------------
-# Fail-fast: report coverage of every source variable before estimation so that
-# all-NA predictors (e.g. eco_index when KBA Bestand is absent) are diagnosed
-# without scrolling through individual feglm error messages.
+# Check source variables AND the derived z-score columns feglm actually sees.
+# Also report joint complete cases and a year x variable table to surface
+# temporal gaps (e.g. eco_index_L1 only from year Y while q_pendlersaldo ends
+# at year X < Y, producing zero joint complete cases).
 
-cat("\nSource variable coverage in risk set (before z-scoring):\n")
-src_vars <- c(
+cat("\nVariable coverage in risk set:\n")
+chk_vars <- c(
+  # source
   "log_pop_dens", "q_pendlersaldo", "muni_gruene_L1",
   "eco_index_L1", "q_gest_bev_L1",
-  "bev_stock_p100k_L1", "ev_chargepoints_p100k_L1", "n_vze_personal_L1"
+  "bev_stock_p100k_L1", "ev_chargepoints_p100k_L1", "n_vze_personal_L1",
+  # derived (what feglm actually reads)
+  "log_dens_z", "pendler_z", "sk_z", "sk_sq_z", "bev_z", "chg_z"
 )
-for (v in src_vars) {
+for (v in chk_vars) {
   if (v %in% names(ph)) {
     pct <- 100 * mean(!is.na(ph[[v]]))
     cat(sprintf("  %-30s: %5.1f%% non-NA\n", v, pct))
   } else {
-    cat(sprintf("  %-30s: MISSING COLUMN -- panel may need regeneration\n", v))
+    cat(sprintf("  %-30s: MISSING\n", v))
   }
 }
+
+base_fvars  <- c("log_dens_z", "pendler_z", "muni_gruene_L1",
+                 "eco_index_L1", "sk_z", "sk_sq_z", "emk_absorbing")
+missing_fv  <- setdiff(base_fvars, names(ph))
+if (length(missing_fv) == 0L) {
+  n_cc <- nrow(na.omit(ph[, ..base_fvars]))
+  cat(sprintf("\nJoint complete cases (base formula): %d / %d (%.1f%%)\n",
+              n_cc, nrow(ph), 100 * n_cc / nrow(ph)))
+} else {
+  cat(sprintf("\nMissing formula columns: %s\n", paste(missing_fv, collapse = ", ")))
+}
+
+cat("\nYear-by-year coverage of key variables:\n")
+yr_cov <- ph[, .(
+  n         = .N,
+  pendler   = round(100 * mean(!is.na(q_pendlersaldo))),
+  eco_L1    = round(100 * mean(!is.na(eco_index_L1))),
+  joint_pct = round(100 * mean(!is.na(q_pendlersaldo) & !is.na(eco_index_L1)))
+), by = year][order(year)]
+print(yr_cov)
 cat("\n")
 
 # -- Specifications -----------------------------------------------------------
