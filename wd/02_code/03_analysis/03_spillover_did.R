@@ -279,7 +279,10 @@ run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
       data_use <- if (spec$ever_only)
         panel_use[ever_treated == TRUE] else panel_use
 
-      cat(sprintf("  %-30s | %-10s | n=%d\n", yname, cid, nrow(data_use)))
+      n_treated <- data_use[ever_treated == TRUE, uniqueN(ags8_id)]
+      n_control <- data_use[ever_treated == FALSE, uniqueN(ags8_id)]
+      cat(sprintf("  %-30s | %-10s | %d treated + %d control units\n",
+                  yname, cid, n_treated, n_control))
 
       es_cs  <- tryCatch(run_cs(yname, data_use, spec$cg), error = function(e) {
         cat(sprintf("    CS error: %s\n", conditionMessage(e))); NULL
