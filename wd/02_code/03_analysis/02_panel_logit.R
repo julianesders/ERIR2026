@@ -5,8 +5,14 @@ library(fixest)
 
 argv      <- commandArgs(trailingOnly = FALSE)
 self_flag <- grep("--file=", argv, value = TRUE)
-if (!length(self_flag)) stop("Run as: Rscript 02_panel_logit.R")
-root       <- dirname(dirname(dirname(normalizePath(sub("--file=", "", self_flag)))))
+self <- if (length(self_flag)) {
+  normalizePath(sub("--file=", "", self_flag))
+} else if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+  normalizePath(rstudioapi::getSourceEditorContext()$path)
+} else {
+  stop("Cannot determine script path. Run as: Rscript 02_panel_logit.R")
+}
+root <- dirname(dirname(dirname(self)))
 DATA_FINAL <- file.path(root, "01_data", "03_final")
 OUT_DIR    <- file.path(root, "04_results")
 dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
