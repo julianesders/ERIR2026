@@ -119,7 +119,9 @@ ES_MIN <- -4L
 ES_MAX <-  4L
 
 # Callaway-Sant'Anna: att_gt + aggte(type="dynamic")
-# bstrap=FALSE for speed; switch to TRUE + cband=TRUE for publication.
+# 1999 clustered bootstrap draws; cband=TRUE for simultaneous confidence bands.
+CS_BITERS <- 1999L
+
 run_cs <- function(yname, data_dt, control_group) {
   att <- att_gt(
     yname         = yname,
@@ -130,11 +132,12 @@ run_cs <- function(yname, data_dt, control_group) {
     control_group = control_group,
     anticipation  = 0L,
     clustervars   = "AGS5",
-    bstrap        = FALSE,
+    bstrap        = TRUE,
+    biters        = CS_BITERS,
     print_details = FALSE
   )
   aggte(att, type = "dynamic", min_e = ES_MIN, max_e = ES_MAX,
-        balance_e = TRUE, na.rm = TRUE)
+        balance_e = TRUE, na.rm = TRUE, cband = TRUE)
 }
 
 # Borusyak-Jaravel-Spiess: did_imputation
