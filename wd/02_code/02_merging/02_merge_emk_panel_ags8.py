@@ -194,6 +194,8 @@ LAG_VARS = [
     "q_gest_bev",      # steuerkraft
     "steuerkraft_sq",
     "eco_index",
+    "bev_stock_p100k",
+    "ev_chargepoints_p100k",
     "fed_gruene",
     "state_gruene",
     "muni_gruene",
