@@ -170,10 +170,18 @@ cs_to_dt <- function(es, label) {
 bor_to_dt <- function(res, label) {
   dt <- as.data.table(res)
   dt[, e := NA_integer_]
+  # "tau0"/"tau1" format (older didimputation)
   dt[grepl("^tau[0-9]+$", term), e := as.integer(sub("tau", "", term))]
+  # "pre1"/"pre2" format where pre1 = t-1 (older didimputation)
   dt[grepl("^pre[0-9]+$", term), e := -as.integer(sub("pre", "", term))]
+  # plain signed integers "0", "1", "-1", ... (newer didimputation)
+  dt[is.na(e) & grepl("^-?[0-9]+$", term), e := as.integer(term)]
   dt <- dt[!is.na(e) & e >= ES_MIN & e <= ES_MAX]
-  if (nrow(dt) == 0L) return(NULL)
+  if (nrow(dt) == 0L) {
+    cat(sprintf("    [Borusyak] no event-study terms matched; first terms: %s\n",
+                paste(head(res$term, 8), collapse = ", ")))
+    return(NULL)
+  }
   dt[, .(
     e,
     att    = estimate,
@@ -209,6 +217,22 @@ es_plot <- function(plot_dt, title, ylab = "ATT (per 100k)") {
     theme(legend.position = "bottom", plot.caption = element_text(size = 7))
 }
 
+# -- Label maps ----------------------------------------------------------------
+
+OUTCOME_LABELS <- c(
+  bev_neuzulassungen_p100k = "BEV new registrations (per 100k population)",
+  bev_corporate_p100k      = "BEV new registrations, corporate (per 100k population)",
+  bev_private_p100k        = "BEV new registrations, private households (per 100k population)",
+  log_bev1                 = "log(1 + BEV new registrations per 100k population)",
+  ice_overall_p100k        = "ICE new registrations (per 100k population) — placebo outcome"
+)
+
+CTRL_SHORT <- c(
+  A_notyet = "Not-yet-treated control\n(sample: ever-treated only)",
+  B_never  = "Never-treated control\n(full sample)",
+  C_joint  = "Joint: not-yet- and never-treated control\n(full sample)"
+)
+
 # -- Control group specifications ---------------------------------------------
 # (A) Not-yet-treated only: restrict data to ever-treated, use notyettreated.
 #     Local comparison; units are themselves selected (will eventually be treated).
@@ -218,9 +242,21 @@ es_plot <- function(plot_dt, title, ylab = "ATT (per 100k)") {
 #     Valid only if both (A) and (B) satisfy parallel trends.
 
 ctrl_specs <- list(
-  A_notyet = list(label = "Not-yet-treated (A)", cg = "notyettreated", ever_only = TRUE),
-  B_never  = list(label = "Never-treated (B)",   cg = "nevertreated",  ever_only = FALSE),
-  C_joint  = list(label = "Joint (C, default)",  cg = "notyettreated", ever_only = FALSE)
+  A_notyet = list(
+    label    = "Control: not-yet-treated (sample restricted to ever-treated Gemeinden)",
+    cg       = "notyettreated",
+    ever_only = TRUE
+  ),
+  B_never  = list(
+    label    = "Control: never-treated Gemeinden (full sample)",
+    cg       = "nevertreated",
+    ever_only = FALSE
+  ),
+  C_joint  = list(
+    label    = "Control: not-yet- and never-treated Gemeinden (Callaway-Sant’Anna default)",
+    cg       = "notyettreated",
+    ever_only = FALSE
+  )
 )
 
 # -- Estimation loop -----------------------------------------------------------
@@ -235,12 +271,15 @@ run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
       bev_private_p100k         = "ATT (BEV neuz. private per 100k)",
       "ATT (per 100k)"
     )
+
+    meta_parts <- list()
+
     for (cid in names(ctrl_specs)) {
       spec     <- ctrl_specs[[cid]]
       data_use <- if (spec$ever_only)
         panel_use[ever_treated == TRUE] else panel_use
 
-      cat(sprintf("  %-30s | %-28s | n=%d\n", yname, spec$label, nrow(data_use)))
+      cat(sprintf("  %-30s | %-10s | n=%d\n", yname, cid, nrow(data_use)))
 
       es_cs  <- tryCatch(run_cs(yname, data_use, spec$cg), error = function(e) {
         cat(sprintf("    CS error: %s\n", conditionMessage(e))); NULL
@@ -255,15 +294,50 @@ run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
       ))
       if (length(parts) == 0L) next
 
-      p <- es_plot(
-        rbindlist(parts),
-        title = sprintf("%s | %s%s", yname, spec$label,
-                        if (nchar(file_suffix)) " | direct only" else ""),
-        ylab  = ylab
-      )
-      fname <- sprintf("es_%s_%s%s.pdf", yname, cid, file_suffix)
-      ggsave(file.path(out_dir, fname), p, width = 8, height = 5)
+      dt <- rbindlist(parts)
+      dt[, ctrl_id := cid]
+      meta_parts[[cid]] <- dt
     }
+
+    if (length(meta_parts) == 0L) next
+
+    meta_dt    <- rbindlist(meta_parts)
+    ctrl_order <- intersect(names(ctrl_specs), unique(meta_dt$ctrl_id))
+    meta_dt[, facet_lbl := factor(CTRL_SHORT[ctrl_id],
+                                   levels = CTRL_SHORT[ctrl_order])]
+
+    out_lbl    <- OUTCOME_LABELS[yname]
+    if (is.na(out_lbl)) out_lbl <- yname
+    direct_tag <- if (nchar(file_suffix)) "\nDirect project assignment only" else ""
+
+    p <- ggplot(meta_dt, aes(x = e, color = estimator, fill = estimator)) +
+      geom_hline(yintercept = 0, color = "gray50", linewidth = 0.4) +
+      geom_vline(xintercept = -0.5, linetype = "dashed",
+                 color = "gray50", linewidth = 0.4) +
+      geom_ribbon(aes(ymin = lo_pw, ymax = hi_pw), alpha = 0.12, color = NA) +
+      geom_line(aes(y = att), linewidth = 0.7) +
+      geom_point(aes(y = att), size = 1.8) +
+      scale_x_continuous(breaks = ES_MIN:ES_MAX) +
+      facet_wrap(~facet_lbl, ncol = 3) +
+      labs(
+        title   = paste0(out_lbl, direct_tag),
+        x       = "Years relative to first funding receipt",
+        y       = ylab,
+        color   = NULL, fill = NULL,
+        caption = paste0(
+          "Shaded band: pointwise 95% CI. Leads left of dashed line adjudicate ",
+          "parallel trends.\n2016 cohort has 1 clean pre-period; pre-trend ",
+          "evidence is stronger for later cohorts."
+        )
+      ) +
+      theme_minimal(base_size = 10) +
+      theme(legend.position = "bottom",
+            plot.caption    = element_text(size = 7),
+            strip.text      = element_text(size = 8, face = "bold"),
+            panel.spacing   = unit(1, "lines"))
+
+    fname <- sprintf("es_%s%s.pdf", yname, file_suffix)
+    ggsave(file.path(out_dir, fname), p, width = 15, height = 5)
   }
 }
 

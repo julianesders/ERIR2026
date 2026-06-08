@@ -106,6 +106,27 @@ cat(sprintf(
   nrow(ph) - nrow(ph_ns), nrow(ph_ns), ph_ns[, sum(emk_absorbing)]
 ))
 
+# -- NA coverage diagnostic ---------------------------------------------------
+# Fail-fast: report coverage of every source variable before estimation so that
+# all-NA predictors (e.g. eco_index when KBA Bestand is absent) are diagnosed
+# without scrolling through individual feglm error messages.
+
+cat("\nSource variable coverage in risk set (before z-scoring):\n")
+src_vars <- c(
+  "log_pop_dens", "q_pendlersaldo", "muni_gruene_L1",
+  "eco_index_L1", "q_gest_bev_L1",
+  "bev_stock_p100k_L1", "ev_chargepoints_p100k_L1", "n_vze_personal_L1"
+)
+for (v in src_vars) {
+  if (v %in% names(ph)) {
+    pct <- 100 * mean(!is.na(ph[[v]]))
+    cat(sprintf("  %-30s: %5.1f%% non-NA\n", v, pct))
+  } else {
+    cat(sprintf("  %-30s: MISSING COLUMN -- panel may need regeneration\n", v))
+  }
+}
+cat("\n")
+
 # -- Specifications -----------------------------------------------------------
 # year FE: discrete-time baseline hazard (non-parametric).
 # AGS2 FE: identifies off cross-Kreis variation (16 Bundeslander).
