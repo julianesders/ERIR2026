@@ -2,9 +2,10 @@
 ERIR2026 pipeline runner.
 
 Usage:
-    python main.py            # run full pipeline (INKAR, KBA, scraping skipped)
+    python main.py            # run full pipeline (INKAR, KBA, ADAC scraping skipped)
     python main.py --inkar    # re-extract INKAR from source (slow, large file)
     python main.py --kba      # include KBA steps (requires delivery files on K: drive)
+    python main.py --adac     # include ADAC price scraping (~1–2 h, requires network)
     python main.py --scrape   # include the EMK scraping step (slow, network)
     python main.py --step 4   # resume from step 4 onwards
 """
@@ -33,9 +34,10 @@ STEPS = [
     (8,  "Clean Personnel (AGS5)",     CODE / "01_cleaning/07_clean_personal_ags5.py",                   None),
     (9,  "Unpack & clean KBA (AGS8)", CODE / "01_cleaning/08_clean_kba_ags8.py",                        "kba-only"),
     (10, "Aggregate KBA variables",   CODE / "01_cleaning/09_aggregate_kba_vars.py",                    "kba-only"),
-    (11, "Match EMK → AGS",            CODE / "02_merging/01_match_emk_ags.py",                          None),
-    (12, "Merge EMK panel (AGS8)",     CODE / "02_merging/02_merge_emk_panel_ags8.py",                   None),
-    (13, "Spatial weights (AGS8)",     CODE / "03_analysis/01_spatial_weights_ags8.py",                  None),
+    (11, "Scrape ADAC prices",        CODE / "01_cleaning/10_scrape_adac_prices.py",                    "adac-only"),
+    (12, "Match EMK → AGS",           CODE / "02_merging/01_match_emk_ags.py",                          None),
+    (13, "Merge EMK panel (AGS8)",    CODE / "02_merging/02_merge_emk_panel_ags8.py",                   None),
+    (14, "Spatial weights (AGS8)",    CODE / "03_analysis/01_spatial_weights_ags8.py",                  None),
 ]
 
 
@@ -64,6 +66,10 @@ def main() -> None:
     parser.add_argument(
         "--kba", action="store_true",
         help="Include KBA steps (requires delivery files on K: drive)",
+    )
+    parser.add_argument(
+        "--adac", action="store_true",
+        help="Include ADAC price scraping step (~1–2 h, requires network)",
     )
     parser.add_argument(
         "--step", type=int, default=0,
@@ -103,6 +109,13 @@ def main() -> None:
                 run(label, script)
             else:
                 print(f"  [skip] Step {step_no}: {label}  (pass --kba to enable)")
+            continue
+
+        if skip_flag == "adac-only":
+            if args.adac and step_no >= args.step:
+                run(label, script)
+            else:
+                print(f"  [skip] Step {step_no}: {label}  (pass --adac to enable)")
             continue
 
         run(label, script)
