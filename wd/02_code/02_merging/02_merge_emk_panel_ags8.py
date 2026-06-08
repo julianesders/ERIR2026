@@ -39,7 +39,12 @@ elections["AGS8"] = elections["AGS8"].str.zfill(8)
 kba = pd.read_csv(
     f"{DATA_DIR_INTERMEDIATE}/kba/kba_ags8_panel.csv",
     dtype={"AGS8": str},
-    usecols=["AGS8", "year", "B_elektro_overall"],
+    usecols=[
+        "AGS8", "year",
+        "B_elektro_overall",
+        "N_elektro_overall", "N_elektro_private", "N_elektro_corporate",
+        "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
+    ],
 )
 kba["AGS8"] = kba["AGS8"].str.zfill(8)
 
@@ -140,7 +145,8 @@ panel["ev_chargepoints_p100k"] = panel["ev_chargepoints"] / panel["xbev"] * 100_
 # ── BEV stock from KBA Bestand (AGS8 level) ───────────────────────────────────
 
 panel = panel.merge(kba, on=["AGS8", "year"], how="left")
-panel["bev_stock_p100k"] = panel["B_elektro_overall"] / panel["xbev"] * 100_000
+panel["bev_stock_p100k"]        = panel["B_elektro_overall"]  / panel["xbev"] * 100_000
+panel["bev_neuzulassungen_p100k"] = panel["N_elektro_overall"] / panel["xbev"] * 100_000
 panel = panel.drop(columns=["B_elektro_overall"])
 
 # ── Derived INKAR variables ───────────────────────────────────────────────────
@@ -210,7 +216,7 @@ for k in [1, 2, 3]:
 # ── Column order ──────────────────────────────────────────────────────────────
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
-derived_cols  = ["log_pop_dens", "steuerkraft_sq", "bev_stock_p100k", "eco_index"]
+derived_cols  = ["log_pop_dens", "steuerkraft_sq", "bev_stock_p100k", "bev_neuzulassungen_p100k", "eco_index"]
 id_cols       = ["AGS8", "AGS5", "year"]
 activity_cols = ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]
 ladestation_cols = [
