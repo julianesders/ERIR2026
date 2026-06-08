@@ -191,6 +191,12 @@ LAG_VARS = [
     "state_gruene",
     "muni_gruene",
     "n_vze_personal",
+    "N_elektro_overall",
+    "N_elektro_private",
+    "N_elektro_corporate",
+    "N_ev_share_overall",
+    "N_ev_share_private",
+    "N_ev_share_corporate"
 ]
 
 panel = panel.sort_values(["AGS8", "year"]).reset_index(drop=True)
