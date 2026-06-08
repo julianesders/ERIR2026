@@ -15,7 +15,6 @@ self <- if (length(self_flag)) {
   stop("Cannot determine script path. Run as: Rscript 02_panel_logit.R")
 }
 root       <- dirname(dirname(dirname(self)))
-data_int   <- file.path(root, "01_data", "02_intermediate")
 data_final <- file.path(root, "01_data", "03_final")
 out_dir    <- file.path(root, "04_results")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
@@ -28,8 +27,7 @@ panel <- fread(
 )
 panel <- panel[year >= 2015]
 
-# Risk-set: units exit after their first onset year.
-# Never-funded units are right-censored (all-zero rows throughout).
+# Risk set: units exit after their first onset year; never-funded are censored.
 panel[,
   first_treat := if (any(emk_absorbing == 1L))
     min(year[emk_absorbing == 1L])
@@ -40,36 +38,15 @@ panel[,
 ph <- panel[year <= first_treat][, first_treat := NULL]
 panel[, first_treat := NULL]
 
-# -- Design diagnostic: direct AGS8 assignment vs Kreis broadcast -------------
-
-emk <- fread(
-  file.path(data_int, "emk", "emk_ags_matched.csv"),
-  colClasses = list(character = c("AGS8", "AGS5")),
-  na.strings  = c("", "NA")
-)
-n_direct <- sum(!is.na(emk$AGS8))
-cat(sprintf(
-  "Projects: %d/%d directly AGS8-assigned (%d%%), %d/%d Kreis-broadcast (%d%%)\n",
-  n_direct,              nrow(emk), round(100 * n_direct / nrow(emk)),
-  nrow(emk) - n_direct,  nrow(emk), round(100 * (1 - n_direct / nrow(emk)))
-))
 cat(sprintf(
   "Risk set: %d obs | %d AGS8 | %d onsets | onset rate %.1f%%\n",
   nrow(ph), ph[, uniqueN(AGS8)], ph[, sum(emk_absorbing)],
   100 * ph[, mean(emk_absorbing)]
 ))
 
-# -- Separation check under AGS5 FE -------------------------------------------
-
-n_ags5_zero <- ph[, .(ever = max(emk_absorbing)), by = AGS5][ever == 0L, .N]
-cat(sprintf(
-  "AGS5 groups with no treated AGS8: %d of %d (dropped under AGS5 FE)\n",
-  n_ags5_zero, ph[, uniqueN(AGS5)]
-))
-
-# -- Standardise continuous regressors on the estimation sample ---------------
-# sk_z/sk_sq_z: build the square from the z-scored level so the polynomial
-# is internally consistent. eco_index already standardised via PCA; no rescale.
+# -- Standardise continuous regressors on the full estimation sample -----------
+# sk_sq_z built from sk_z so the polynomial is internally consistent.
+# eco_index_L1 already standardised via PCA; no rescaling needed.
 
 z <- function(x) as.numeric(scale(x))
 
@@ -83,134 +60,106 @@ ph[, chg_z      := z(ev_chargepoints_p100k_L1)]
 sk_mean <- mean(ph$q_gest_bev_L1, na.rm = TRUE)
 sk_sd   <- sd(ph$q_gest_bev_L1,   na.rm = TRUE)
 
-# -- Stadtstaaten exclusion for personnel spec --------------------------------
-# Hamburg (02), Bremen (04), Berlin (11): personnel conflates municipal/state
-# roles, incomparable to Flachenlander. Baseline also run on this restricted
-# sample so the only difference from the personnel model is the added regressor.
+# -- Stadtstaaten exclusion for personnel specs --------------------------------
+# Hamburg (02), Bremen (04), Berlin (11): n_vze_personal conflates
+# municipal/Lander roles and is measured at AGS5 -> collinear with AGS5 FE.
+# Personnel specs therefore use AGS2 FE and the no-Stadtstaaten sample.
 
 STADTSTAATEN <- c("02", "04", "11")
 ph_ns <- ph[!(AGS2 %in% STADTSTAATEN)]
-ph_ns[, sk_z    := z(q_gest_bev_L1)]   # re-z-score on restricted sample
-ph_ns[, sk_sq_z := sk_z^2]
-ph_ns[, pers_z  := z(n_vze_personal_L1)]
+ph_ns[, sk_z       := z(q_gest_bev_L1)]   # re-z-score on restricted sample
+ph_ns[, sk_sq_z    := sk_z^2]
 ph_ns[, log_dens_z := z(log_pop_dens)]
 ph_ns[, pendler_z  := z(q_pendlersaldo)]
 ph_ns[, bev_z      := z(bev_stock_p100k_L1)]
 ph_ns[, chg_z      := z(ev_chargepoints_p100k_L1)]
+ph_ns[, pers_z     := z(n_vze_personal_L1)]
 
 sk_mean_ns <- mean(ph_ns$q_gest_bev_L1, na.rm = TRUE)
 sk_sd_ns   <- sd(ph_ns$q_gest_bev_L1,   na.rm = TRUE)
 
 cat(sprintf(
-  "No-Stadtstaaten: %d obs dropped | %d obs | %d onsets\n",
-  nrow(ph) - nrow(ph_ns), nrow(ph_ns), ph_ns[, sum(emk_absorbing)]
+  "No-Stadtstaaten: %d obs dropped | %d obs | %d AGS8 | %d onsets\n",
+  nrow(ph) - nrow(ph_ns), nrow(ph_ns),
+  ph_ns[, uniqueN(AGS8)], ph_ns[, sum(emk_absorbing)]
 ))
 
-# -- NA coverage diagnostic ---------------------------------------------------
-# Check source variables AND the derived z-score columns feglm actually sees.
-# Also report joint complete cases and a year x variable table to surface
-# temporal gaps (e.g. eco_index_L1 only from year Y while q_pendlersaldo ends
-# at year X < Y, producing zero joint complete cases).
+# -- Formulas ------------------------------------------------------------------
+# Two ecosystem variants:
+#   eco  — PCA composite index (eco_index_L1)
+#   comp — two separate indicators (bev_z, chg_z)
+# Two FE variants:
+#   AGS2 — cross-Bundesland variation (16 states)
+#   AGS5 — within-Kreis variation (absorbs AGS5-constant regressors)
+# Personnel variant: AGS2 FE + no-Stadtstaaten sample only (see above)
+# Clustering at AGS5: coarsest level at which treatment assignment occurs.
 
-cat("\nVariable coverage in risk set:\n")
-chk_vars <- c(
-  # source
-  "log_pop_dens", "q_pendlersaldo", "muni_gruene_L1",
-  "eco_index_L1", "q_gest_bev_L1",
-  "bev_stock_p100k_L1", "ev_chargepoints_p100k_L1", "n_vze_personal_L1",
-  # derived (what feglm actually reads)
-  "log_dens_z", "pendler_z", "sk_z", "sk_sq_z", "bev_z", "chg_z"
-)
-for (v in chk_vars) {
-  if (v %in% names(ph)) {
-    pct <- 100 * mean(!is.na(ph[[v]]))
-    cat(sprintf("  %-30s: %5.1f%% non-NA\n", v, pct))
-  } else {
-    cat(sprintf("  %-30s: MISSING\n", v))
-  }
-}
-
-base_fvars  <- c("log_dens_z", "pendler_z", "muni_gruene_L1",
-                 "eco_index_L1", "sk_z", "sk_sq_z", "emk_absorbing")
-missing_fv  <- setdiff(base_fvars, names(ph))
-if (length(missing_fv) == 0L) {
-  n_cc <- nrow(na.omit(ph[, ..base_fvars]))
-  cat(sprintf("\nJoint complete cases (base formula): %d / %d (%.1f%%)\n",
-              n_cc, nrow(ph), 100 * n_cc / nrow(ph)))
-} else {
-  cat(sprintf("\nMissing formula columns: %s\n", paste(missing_fv, collapse = ", ")))
-}
-
-cat("\nYear-by-year coverage of key variables:\n")
-yr_cov <- ph[, .(
-  n         = .N,
-  pendler   = round(100 * mean(!is.na(q_pendlersaldo))),
-  eco_L1    = round(100 * mean(!is.na(eco_index_L1))),
-  joint_pct = round(100 * mean(!is.na(q_pendlersaldo) & !is.na(eco_index_L1)))
-), by = year][order(year)]
-print(yr_cov)
-cat("\n")
-
-# -- Specifications -----------------------------------------------------------
-# year FE: discrete-time baseline hazard (non-parametric).
-# AGS2 FE: identifies off cross-Kreis variation (16 Bundeslander).
-# AGS5 FE: within-Kreis variation; absorbs any AGS5-constant regressors.
-#   n_vze_personal is measured at AGS5 -> collinear with AGS5 FE, AGS2-only.
-# Clustering on AGS5: coarsest level at which treatment is assigned.
-
-f_base_a2 <- emk_absorbing ~
-  log_dens_z + pendler_z + muni_gruene_L1 +
+f_eco_a2 <- emk_absorbing ~
+  log_dens_z + pendler_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z | year + AGS2
 
-f_base_a5 <- emk_absorbing ~
-  log_dens_z + pendler_z + muni_gruene_L1 +
+f_eco_a5 <- emk_absorbing ~
+  log_dens_z + pendler_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z | year + AGS5
 
 f_comp_a2 <- emk_absorbing ~
-  log_dens_z + pendler_z + muni_gruene_L1 +
+  log_dens_z + pendler_z + state_gruene_L1 +
   bev_z + chg_z + sk_z + sk_sq_z | year + AGS2
 
 f_comp_a5 <- emk_absorbing ~
-  log_dens_z + pendler_z + muni_gruene_L1 +
+  log_dens_z + pendler_z + state_gruene_L1 +
   bev_z + chg_z + sk_z + sk_sq_z | year + AGS5
 
-f_pers_a2 <- emk_absorbing ~
-  log_dens_z + pendler_z + muni_gruene_L1 +
+f_eco_pers <- emk_absorbing ~
+  log_dens_z + pendler_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z + pers_z | year + AGS2
+
+f_comp_pers <- emk_absorbing ~
+  log_dens_z + pendler_z + state_gruene_L1 +
+  bev_z + chg_z + sk_z + sk_sq_z + pers_z | year + AGS2
 
 # -- Estimation ----------------------------------------------------------------
 
 cll <- binomial("cloglog")   # primary: discrete-time proportional hazards
 lgt <- binomial("logit")     # robustness
 
-m_cll_base_a2 <- feglm(f_base_a2, data = ph,    family = cll, cluster = ~AGS5)
-m_cll_base_a5 <- feglm(f_base_a5, data = ph,    family = cll, cluster = ~AGS5)
-m_cll_comp_a2 <- feglm(f_comp_a2, data = ph,    family = cll, cluster = ~AGS5)
-m_cll_comp_a5 <- feglm(f_comp_a5, data = ph,    family = cll, cluster = ~AGS5)
-m_cll_base_ns <- feglm(f_base_a2, data = ph_ns, family = cll, cluster = ~AGS5)
-m_cll_pers_a2 <- feglm(f_pers_a2, data = ph_ns, family = cll, cluster = ~AGS5)
-m_lgt_base_a2 <- feglm(f_base_a2, data = ph,    family = lgt, cluster = ~AGS5)
-m_lgt_base_a5 <- feglm(f_base_a5, data = ph,    family = lgt, cluster = ~AGS5)
+cat("\nEstimating cloglog models...\n")
+m_cll_eco_a2    <- feglm(f_eco_a2,    data = ph,    family = cll, cluster = ~AGS5)
+m_cll_eco_a5    <- feglm(f_eco_a5,    data = ph,    family = cll, cluster = ~AGS5)
+m_cll_comp_a2   <- feglm(f_comp_a2,   data = ph,    family = cll, cluster = ~AGS5)
+m_cll_comp_a5   <- feglm(f_comp_a5,   data = ph,    family = cll, cluster = ~AGS5)
+m_cll_eco_pers  <- feglm(f_eco_pers,  data = ph_ns, family = cll, cluster = ~AGS5)
+m_cll_comp_pers <- feglm(f_comp_pers, data = ph_ns, family = cll, cluster = ~AGS5)
 
-# -- Diagnostics ---------------------------------------------------------------
+cat("Estimating logit models...\n")
+m_lgt_eco_a2    <- feglm(f_eco_a2,    data = ph,    family = lgt, cluster = ~AGS5)
+m_lgt_eco_a5    <- feglm(f_eco_a5,    data = ph,    family = lgt, cluster = ~AGS5)
+m_lgt_comp_a2   <- feglm(f_comp_a2,   data = ph,    family = lgt, cluster = ~AGS5)
+m_lgt_comp_a5   <- feglm(f_comp_a5,   data = ph,    family = lgt, cluster = ~AGS5)
+m_lgt_eco_pers  <- feglm(f_eco_pers,  data = ph_ns, family = lgt, cluster = ~AGS5)
+m_lgt_comp_pers <- feglm(f_comp_pers, data = ph_ns, family = lgt, cluster = ~AGS5)
+
+# -- Observations per model ----------------------------------------------------
 
 cat("\nObservations used per model:\n")
-for (pair in list(
-  list(m_cll_base_a2, "cloglog base      AGS2"),
-  list(m_cll_base_a5, "cloglog base      AGS5"),
-  list(m_cll_comp_a2, "cloglog comp      AGS2"),
-  list(m_cll_comp_a5, "cloglog comp      AGS5"),
-  list(m_cll_base_ns, "cloglog base      AGS2 (no-Stadtstaaten)"),
-  list(m_cll_pers_a2, "cloglog base+pers AGS2 (no-Stadtstaaten)"),
-  list(m_lgt_base_a2, "logit   base      AGS2"),
-  list(m_lgt_base_a5, "logit   base      AGS5")
-)) {
-  cat(sprintf("  %-45s n = %d\n", pair[[2]], nobs(pair[[1]])))
-}
+for (s in list(
+  list(m_cll_eco_a2,    "cloglog  eco        AGS2   full sample"),
+  list(m_cll_eco_a5,    "cloglog  eco        AGS5   full sample"),
+  list(m_cll_comp_a2,   "cloglog  comp       AGS2   full sample"),
+  list(m_cll_comp_a5,   "cloglog  comp       AGS5   full sample"),
+  list(m_cll_eco_pers,  "cloglog  eco+pers   AGS2   no-Stadtstaaten"),
+  list(m_cll_comp_pers, "cloglog  comp+pers  AGS2   no-Stadtstaaten"),
+  list(m_lgt_eco_a2,    "logit    eco        AGS2   full sample"),
+  list(m_lgt_eco_a5,    "logit    eco        AGS5   full sample"),
+  list(m_lgt_comp_a2,   "logit    comp       AGS2   full sample"),
+  list(m_lgt_comp_a5,   "logit    comp       AGS5   full sample"),
+  list(m_lgt_eco_pers,  "logit    eco+pers   AGS2   no-Stadtstaaten"),
+  list(m_lgt_comp_pers, "logit    comp+pers  AGS2   no-Stadtstaaten")
+)) cat(sprintf("  %-48s n = %d\n", s[[2]], nobs(s[[1]])))
 
-# -- Steuerkraft turning point ------------------------------------------------
-# tp_z = -b_sk / (2 * b_sk_sq); back-convert to original units.
-# If outside data range, the hump hypothesis is not supported in-sample.
+# -- Steuerkraft turning points ------------------------------------------------
+# tp_z = -b_sk / (2 * b_sk_sq); back-convert from z-scores to EUR/capita.
+# A turning point outside the 1-99 pct data range is not in-sample support.
 
 tp <- function(m, mu, sig) {
   b <- coef(m)
@@ -218,45 +167,92 @@ tp <- function(m, mu, sig) {
   (-b["sk_z"] / (2 * b["sk_sq_z"])) * sig + mu
 }
 
-cat(sprintf("\nSteuerkraft turning points (EUR/capita):\n"))
-cat(sprintf("  cloglog base AGS2 (full):             %.0f\n",
-  tp(m_cll_base_a2, sk_mean,    sk_sd)))
-cat(sprintf("  cloglog base AGS2 (no-Stadtstaaten):  %.0f\n",
-  tp(m_cll_base_ns, sk_mean_ns, sk_sd_ns)))
-cat(sprintf("  Data range in estimation sample:      [%.0f, %.0f]\n",
-  quantile(ph$q_gest_bev_L1, 0.01, na.rm = TRUE),
-  quantile(ph$q_gest_bev_L1, 0.99, na.rm = TRUE)))
+sk_range <- quantile(ph$q_gest_bev_L1, c(0.01, 0.99), na.rm = TRUE)
 
-# -- Output -------------------------------------------------------------------
-# Column groups: cloglog AGS2 | cloglog AGS5 | logit robustness (AGS2+AGS5).
-# * = no-Stadtstaaten sample. Personnel spec is AGS2-only (AGS5 FE would
-#   absorb n_vze_personal which is constant within Kreis).
+cat("\nSteuerkraft turning points (EUR/capita):\n")
+for (s in list(
+  list(m_cll_eco_a2,    sk_mean,    sk_sd,    "cloglog eco        AGS2 full   "),
+  list(m_cll_eco_a5,    sk_mean,    sk_sd,    "cloglog eco        AGS5 full   "),
+  list(m_cll_comp_a2,   sk_mean,    sk_sd,    "cloglog comp       AGS2 full   "),
+  list(m_cll_comp_a5,   sk_mean,    sk_sd,    "cloglog comp       AGS5 full   "),
+  list(m_cll_eco_pers,  sk_mean_ns, sk_sd_ns, "cloglog eco+pers   AGS2 no-SS  "),
+  list(m_cll_comp_pers, sk_mean_ns, sk_sd_ns, "cloglog comp+pers  AGS2 no-SS  ")
+)) {
+  val     <- tp(s[[1]], s[[2]], s[[3]])
+  in_rng  <- if (!is.na(val)) ifelse(val >= sk_range[1] & val <= sk_range[2], "", " [out of range]") else ""
+  cat(sprintf("  %-35s %7.0f EUR/capita%s\n", s[[4]], val, in_rng))
+}
+cat(sprintf("  Data range [p1, p99]:               [%7.0f, %7.0f] EUR/capita\n",
+  sk_range[1], sk_range[2]))
+
+# -- Output tables -------------------------------------------------------------
 
 dict <- c(
-  log_dens_z   = "Log pop. density (z)",
-  pendler_z    = "Commuter balance (z)",
-  muni_gruene_L1 = "Mun. Gruene vote share (L1)",
-  eco_index_L1 = "EV ecosystem index (L1)",
-  sk_z         = "Steuerkraft (z, L1)",
-  sk_sq_z      = "Steuerkraft sq. (z, L1)",
-  bev_z        = "BEV stock p100k (z, L1)",
-  chg_z        = "Charging pts p100k (z, L1)",
-  pers_z       = "Personnel VZE (z, L1)"
+  log_dens_z      = "Log pop. density (z)",
+  pendler_z       = "Commuter balance (z)",
+  state_gruene_L1 = "State Gruene vote share (L1)",
+  eco_index_L1    = "EV ecosystem index PCA (L1)",
+  sk_z            = "Steuerkraft (z, L1)",
+  sk_sq_z         = "Steuerkraft sq. (z, L1)",
+  bev_z           = "BEV stock p100k (z, L1)",
+  chg_z           = "Charging pts p100k (z, L1)",
+  pers_z          = "Municipal personnel VZE (z, L1)"
 )
 
-models  <- list(m_cll_base_a2, m_cll_comp_a2, m_cll_base_ns, m_cll_pers_a2,
-                m_cll_base_a5, m_cll_comp_a5,
-                m_lgt_base_a2, m_lgt_base_a5)
-headers <- c("Base", "Comp", "Base*", "Base*+Pers",
-             "Base", "Comp", "Base", "Base")
+tab_note <- paste0(
+  "Discrete-time hazard on AGS8 risk set (year >= 2015). ",
+  "Cols (5)-(6): Hamburg, Bremen, Berlin excluded (personnel measured at AGS5). ",
+  "year FE = non-parametric baseline hazard. ",
+  "SEs clustered at AGS5."
+)
 
-do.call(etable, c(models, list(headers = headers, depvar = FALSE,
-                               digits = 4, dict = dict)))
+col_labels <- c(
+  "(1) Eco/AGS2", "(2) Eco/AGS5",
+  "(3) Comp/AGS2", "(4) Comp/AGS5",
+  "(5) Eco+P/AGS2", "(6) Comp+P/AGS2"
+)
 
-do.call(etable, c(models, list(headers = headers, depvar = FALSE,
-                               digits = 4, dict = dict,
-                               file    = file.path(out_dir, "tab_treatment_onset.tex"),
-                               replace = TRUE)))
+cll_models <- list(
+  m_cll_eco_a2, m_cll_eco_a5,
+  m_cll_comp_a2, m_cll_comp_a5,
+  m_cll_eco_pers, m_cll_comp_pers
+)
+lgt_models <- list(
+  m_lgt_eco_a2, m_lgt_eco_a5,
+  m_lgt_comp_a2, m_lgt_comp_a5,
+  m_lgt_eco_pers, m_lgt_comp_pers
+)
 
-cat(sprintf("\nTeX table written to: %s\n",
-  file.path(out_dir, "tab_treatment_onset.tex")))
+cat("\n=== Cloglog: discrete-time hazard (primary) ===\n")
+do.call(etable, c(
+  setNames(cll_models, col_labels),
+  list(depvar = FALSE, digits = 4, dict = dict, notes = tab_note)
+))
+
+cat("\n=== Logit: robustness ===\n")
+do.call(etable, c(
+  setNames(lgt_models, col_labels),
+  list(depvar = FALSE, digits = 4, dict = dict, notes = tab_note)
+))
+
+do.call(etable, c(
+  setNames(cll_models, col_labels),
+  list(
+    depvar  = FALSE, digits = 4, dict = dict, notes = tab_note,
+    title   = "Discrete-time hazard (cloglog): drivers of EMK treatment onset",
+    file    = file.path(out_dir, "tab_onset_cloglog.tex"),
+    replace = TRUE
+  )
+))
+
+do.call(etable, c(
+  setNames(lgt_models, col_labels),
+  list(
+    depvar  = FALSE, digits = 4, dict = dict, notes = tab_note,
+    title   = "Logit robustness: drivers of EMK treatment onset",
+    file    = file.path(out_dir, "tab_onset_logit.tex"),
+    replace = TRUE
+  )
+))
+
+cat(sprintf("\nTeX tables written to: %s\n", out_dir))
