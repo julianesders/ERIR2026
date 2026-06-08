@@ -133,6 +133,7 @@ emk_attrs = emk.groupby("AGS5", as_index=False).agg(**{
 
 panel = inkar.merge(activity, on=["AGS8", "year"], how="left")
 panel = panel.merge(emk_attrs, on="AGS5", how="left")
+panel["AGS2"] = panel["AGS8"].str[:2]
 
 # ── Charging stations (AGS8 level) ────────────────────────────────────────────
 
@@ -217,7 +218,7 @@ for k in [1, 2, 3]:
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
 derived_cols  = ["log_pop_dens", "steuerkraft_sq", "bev_stock_p100k", "bev_neuzulassungen_p100k", "eco_index"]
-id_cols       = ["AGS8", "AGS5", "year"]
+id_cols       = ["AGS8", "AGS5", "AGS2", "year"]
 activity_cols = ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]
 ladestation_cols = [
     "ev_stations", "ev_stations_p100k",
