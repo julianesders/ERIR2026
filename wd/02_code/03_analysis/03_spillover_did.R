@@ -36,15 +36,13 @@ panel <- fread(
 panel <- panel[year >= 2015]
 
 # -- Outcome construction ------------------------------------------------------
-# Common denominator: xbev (time-varying population) for all three BEV splits
-# so that corporate + private = overall per 100k (additivity preserved).
+# bev_neuzulassungen_p100k, bev_corporate_p100k, bev_private_p100k already
+# computed in the Python merge step; no need to reconstruct from raw counts.
 
-panel[, bev_overall_p100k   := N_elektro_overall   / xbev * 1e5]
-panel[, bev_corporate_p100k := N_elektro_corporate / xbev * 1e5]
-panel[, bev_private_p100k   := N_elektro_private   / xbev * 1e5]
-panel[, log_bev1            := log1p(bev_overall_p100k)]
+panel[, log_bev1 := log1p(bev_neuzulassungen_p100k)]
 
-# ICE placebo: derived from EV share. Verify scale before trusting these values.
+# ICE placebo: invert EV share applied to existing BEV neuzulassungen p100k.
+# Verify scale before trusting these values.
 share_med <- median(panel$N_ev_share_overall, na.rm = TRUE)
 share_fac <- if (share_med < 0.5) 1 else 100   # 1 if fraction, 100 if pct
 cat(sprintf("N_ev_share_overall: median=%.4f -> treating as %s\n",
@@ -52,7 +50,7 @@ cat(sprintf("N_ev_share_overall: median=%.4f -> treating as %s\n",
 panel[,
   ice_overall_p100k := fifelse(
     N_ev_share_overall / share_fac > 0.001,
-    N_elektro_overall * (share_fac / N_ev_share_overall - 1) / xbev * 1e5,
+    bev_neuzulassungen_p100k * (share_fac / N_ev_share_overall - 1),
     NA_real_
   )
 ]
@@ -71,7 +69,7 @@ panel[, ever_treated := first_treat_yr != .Machine$integer.max]
 # did package convention: gname = 0 for never-treated
 panel[, first_treat_cs  := fifelse(ever_treated, as.integer(first_treat_yr), 0L)]
 # didimputation convention: gname = Inf for never-treated
-panel[, first_treat_bor := fifelse(ever_treated, first_treat_yr, Inf)]
+panel[, first_treat_bor := fifelse(ever_treated, as.numeric(first_treat_yr), Inf)]
 
 # did package requires an integer unit ID
 panel[, ags8_id := as.integer(.GRP), by = AGS8]
@@ -114,7 +112,7 @@ panel_direct[
 # -- Estimation constants and helpers -----------------------------------------
 
 OUTCOMES <- c(
-  "bev_overall_p100k", "bev_corporate_p100k", "bev_private_p100k",
+  "bev_neuzulassungen_p100k", "bev_corporate_p100k", "bev_private_p100k",
   "log_bev1", "ice_overall_p100k"
 )
 ES_MIN <- -4L
@@ -230,9 +228,12 @@ ctrl_specs <- list(
 run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
   for (yname in outcomes) {
     ylab <- switch(yname,
-      log_bev1          = "ATT (log BEV per 100k + 1)",
-      ice_overall_p100k = "ATT (ICE neuz. per 100k) [placebo]",
-      "ATT (BEV neuz. per 100k)"
+      log_bev1                  = "ATT (log BEV neuz. per 100k + 1)",
+      ice_overall_p100k         = "ATT (ICE neuz. per 100k) [placebo]",
+      bev_neuzulassungen_p100k  = "ATT (BEV neuz. overall per 100k)",
+      bev_corporate_p100k       = "ATT (BEV neuz. corporate per 100k)",
+      bev_private_p100k         = "ATT (BEV neuz. private per 100k)",
+      "ATT (per 100k)"
     )
     for (cid in names(ctrl_specs)) {
       spec     <- ctrl_specs[[cid]]
@@ -270,6 +271,6 @@ cat("\n=== Primary estimation (all treated, broadcast included) ===\n")
 run_and_plot(panel, OUTCOMES, ctrl_specs)
 
 cat("\n=== Broadcasting sensitivity (direct AGS8-assigned only) ===\n")
-run_and_plot(panel_direct, c("bev_overall_p100k"), ctrl_specs, "_direct")
+run_and_plot(panel_direct, c("bev_neuzulassungen_p100k"), ctrl_specs, "_direct")
 
 cat(sprintf("\nAll plots written to: %s\n", out_dir))
