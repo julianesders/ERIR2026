@@ -152,6 +152,18 @@ panel["bev_corporate_p100k"]      = panel["N_elektro_corporate"] / panel["xbev"]
 panel["bev_private_p100k"]        = panel["N_elektro_private"]   / panel["xbev"] * 100_000
 panel = panel.drop(columns=["B_elektro_overall"])
 
+# Forward-fill BEV stock within each AGS8 to bridge KBA coverage gaps (e.g.
+# cells suppressed for small counts, or KBA not yet reporting in early years).
+# Must happen before eco_index PCA so the fill propagates into the index and
+# subsequently into all _L1 lags.
+panel = panel.sort_values(["AGS8", "year"])
+for _col in ["bev_stock_p100k", "ev_chargepoints_p100k"]:
+    panel[_col] = panel.groupby("AGS8")[_col].transform("ffill")
+
+_bev_holes = panel["bev_stock_p100k"].isna().sum()
+print(f"bev_stock_p100k NaN after ffill: {_bev_holes} "
+      f"({100 * _bev_holes / len(panel):.1f}% of rows — pre-KBA period)")
+
 # ── Derived INKAR variables ───────────────────────────────────────────────────
 
 # Population density (log): population / land area in km²
