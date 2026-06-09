@@ -144,8 +144,8 @@ panel["AGS2"] = panel["AGS8"].str[:2]
 # Drop rows where population is missing — xbev is the denominator for all
 # per-capita variables; rows without it are uninformative.
 _n_before = len(panel)
-panel = panel[panel["xbev"].notna()].copy()
-print(f"Dropped {_n_before - len(panel)} rows with missing xbev "
+panel = panel[panel["xbev"].notna() & (panel["xbev"] > 0)].copy()
+print(f"Dropped {_n_before - len(panel)} rows with missing or zero xbev "
       f"({panel['AGS8'].nunique()} AGS8 units remaining)")
 
 # ── Gemeinde area (AGS8 × year) ───────────────────────────────────────────────
