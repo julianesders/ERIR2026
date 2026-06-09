@@ -17,7 +17,7 @@ AGS5_VARS: list[str] = [
 ]
 
 AGS8_VARS: list[str] = [
-    "TN23-kataster_qkm", "xbev", "q_kaufkraft", "a_landwirtschaft", "q_gest_bev", "q_sach", "q_investZ", "q_pendlersaldo"
+    "xbev", "q_kaufkraft", "a_landwirtschaft", "q_gest_bev", "q_sach", "q_investZ", "q_pendlersaldo"
 ]
 
 # ── Load ───────────────────────────────────────────────────────────────────────

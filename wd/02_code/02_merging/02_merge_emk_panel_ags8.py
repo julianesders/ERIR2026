@@ -48,6 +48,12 @@ kba = pd.read_csv(
 )
 kba["AGS8"] = kba["AGS8"].str.zfill(8)
 
+area = pd.read_csv(
+    f"{DATA_DIR_INTERMEDIATE}/area/area_ags8_panel.csv",
+    dtype={"AGS8": str},
+)
+area["AGS8"] = area["AGS8"].str.zfill(8)
+
 emk = pd.read_csv(
     f"{DATA_DIR_INTERMEDIATE}/emk/emk_ags_matched.csv",
     dtype={"AGS8": str, "AGS5": str},
@@ -135,6 +141,10 @@ panel = inkar.merge(activity, on=["AGS8", "year"], how="left")
 panel = panel.merge(emk_attrs, on="AGS5", how="left")
 panel["AGS2"] = panel["AGS8"].str[:2]
 
+# ── Gemeinde area (AGS8 × year) ───────────────────────────────────────────────
+
+panel = panel.merge(area, on=["AGS8", "year"], how="left")
+
 # ── Charging stations (AGS8 level) ────────────────────────────────────────────
 
 panel = panel.merge(ladestationen, on=["AGS8", "year"], how="left")
@@ -167,7 +177,7 @@ print(f"bev_stock_p100k NaN after ffill: {_bev_holes} "
 # ── Derived INKAR variables ───────────────────────────────────────────────────
 
 # Population density (log): population / land area in km²
-panel["log_pop_dens"] = np.log(panel["xbev"] / panel["TN23-kataster_qkm"])
+panel["log_pop_dens"] = np.log(panel["xbev"] / panel["area_qkm"])
 
 # Steuerkraft squared (q_gest_bev = steuerkraft)
 panel["steuerkraft_sq"] = panel["q_gest_bev"] ** 2
@@ -234,7 +244,7 @@ for k in [1, 2, 3]:
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
 derived_cols  = [
-    "log_pop_dens", "steuerkraft_sq",
+    "area_qkm", "log_pop_dens", "steuerkraft_sq",
     "bev_stock_p100k", "bev_neuzulassungen_p100k",
     "bev_corporate_p100k", "bev_private_p100k",
     "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
