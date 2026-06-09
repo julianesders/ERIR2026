@@ -141,6 +141,13 @@ panel = inkar.merge(activity, on=["AGS8", "year"], how="left")
 panel = panel.merge(emk_attrs, on="AGS5", how="left")
 panel["AGS2"] = panel["AGS8"].str[:2]
 
+# Drop rows where population is missing — xbev is the denominator for all
+# per-capita variables; rows without it are uninformative.
+_n_before = len(panel)
+panel = panel[panel["xbev"].notna()].copy()
+print(f"Dropped {_n_before - len(panel)} rows with missing xbev "
+      f"({panel['AGS8'].nunique()} AGS8 units remaining)")
+
 # ── Gemeinde area (AGS8 × year) ───────────────────────────────────────────────
 
 panel = panel.merge(area, on=["AGS8", "year"], how="left")
