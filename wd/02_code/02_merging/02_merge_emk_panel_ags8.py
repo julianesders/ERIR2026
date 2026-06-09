@@ -24,6 +24,17 @@ personal = pd.read_csv(
 )
 personal["AGS5"] = personal["AGS5"].str.zfill(5)
 
+# Convert raw VZE headcount to per-100k using AGS5 population (sum of AGS8 xbev).
+# Done here so that personal stays a clean raw-count file.
+_pop_ags5 = (
+    inkar.groupby(["AGS5", "year"], as_index=False)["xbev"]
+    .sum()
+    .rename(columns={"xbev": "_pop_ags5"})
+)
+personal = personal.merge(_pop_ags5, on=["AGS5", "year"], how="left")
+personal["n_vze_personal"] = personal["n_vze_personal"] / personal["_pop_ags5"] * 100_000
+personal = personal.drop(columns=["_pop_ags5"])
+
 ladestationen = pd.read_csv(
     f"{DATA_DIR_INTERMEDIATE}/ladestationen/ladestationen_ags8_panel.csv",
     dtype={"AGS8": str},
