@@ -156,23 +156,33 @@ panel["ev_chargepoints_p100k"] = panel["ev_chargepoints"] / panel["xbev"] * 100_
 # ── BEV stock from KBA Bestand (AGS8 level) ───────────────────────────────────
 
 panel = panel.merge(kba, on=["AGS8", "year"], how="left")
+
+# Interpolate raw KBA counts before per-capita division so the denominator
+# (population) stays year-specific. limit=2: fill at most 2 consecutive missing
+# years; limit_direction="both" covers interior gaps (linear), leading NAs
+# (backward constant from first value), and trailing NAs (forward constant).
+# Must happen before eco_index PCA so the fill propagates into the index and
+# subsequently into all _L1 lags.
+_kba_count_cols = [
+    "B_elektro_overall",
+    "N_elektro_overall", "N_elektro_private", "N_elektro_corporate",
+    "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
+]
+panel = panel.sort_values(["AGS8", "year"])
+for _col in _kba_count_cols:
+    panel[_col] = panel.groupby("AGS8")[_col].transform(
+        lambda s: s.interpolate(method="linear", limit=2, limit_direction="both")
+    )
+
 panel["bev_stock_p100k"]          = panel["B_elektro_overall"]    / panel["xbev"] * 100_000
 panel["bev_neuzulassungen_p100k"] = panel["N_elektro_overall"]   / panel["xbev"] * 100_000
 panel["bev_corporate_p100k"]      = panel["N_elektro_corporate"] / panel["xbev"] * 100_000
 panel["bev_private_p100k"]        = panel["N_elektro_private"]   / panel["xbev"] * 100_000
 panel = panel.drop(columns=["B_elektro_overall"])
 
-# Forward-fill BEV stock within each AGS8 to bridge KBA coverage gaps (e.g.
-# cells suppressed for small counts, or KBA not yet reporting in early years).
-# Must happen before eco_index PCA so the fill propagates into the index and
-# subsequently into all _L1 lags.
-panel = panel.sort_values(["AGS8", "year"])
-for _col in ["bev_stock_p100k", "ev_chargepoints_p100k"]:
-    panel[_col] = panel.groupby("AGS8")[_col].transform("ffill")
-
 _bev_holes = panel["bev_stock_p100k"].isna().sum()
-print(f"bev_stock_p100k NaN after ffill: {_bev_holes} "
-      f"({100 * _bev_holes / len(panel):.1f}% of rows — pre-KBA period)")
+print(f"bev_stock_p100k NaN after interpolation: {_bev_holes} "
+      f"({100 * _bev_holes / len(panel):.1f}% of rows — gap > 2 yrs or pre-KBA)")
 
 # ── Derived INKAR variables ───────────────────────────────────────────────────
 
