@@ -43,13 +43,35 @@ raw["area_qkm"] = (
 )
 raw["area_qkm"] = pd.to_numeric(raw["area_qkm"], errors="coerce")
 
-# ── Filter to AGS8-level rows only ───────────────────────────────────────────
-# 8-digit codes are Gemeinden in Landkreisen.
-# Shorter codes (2 = Bundesland, 3 = Regierungsbezirk, 5 = Kreis) are excluded.
+# ── Filter to Gemeinde-level rows ────────────────────────────────────────────
+# 8-digit codes: regular Gemeinden in Landkreisen — include directly.
+# 5-digit codes: either a Landkreis (has 8-digit child rows) or a kreisfreie
+#   Stadt (has NO 8-digit children, because the city IS the only Gemeinde).
+#   Distinguish by checking, per year, whether any 8-digit code shares the
+#   same 5-digit prefix. Only childless 5-digit codes are kreisfreie Städte;
+#   assign them AGS8 = AGS5 + "000".
 
-area = raw[raw["ags"].str.len() == 8][["ags", "year", "area_qkm"]].copy()
-area = area.rename(columns={"ags": "AGS8"})
+gemeinden = raw[raw["ags"].str.len() == 8].copy()
+gemeinden["AGS8"] = gemeinden["ags"]
+
+five_digit = raw[raw["ags"].str.len() == 5].copy()
+# Set of (prefix, year) pairs that have at least one 8-digit child
+has_children = set(
+    zip(gemeinden["ags"].str[:5], gemeinden["year"])
+)
+kreisfrei = five_digit[
+    ~five_digit.apply(lambda r: (r["ags"], r["year"]) in has_children, axis=1)
+].copy()
+kreisfrei["AGS8"] = kreisfrei["ags"] + "000"
+
+area = pd.concat(
+    [gemeinden[["AGS8", "year", "area_qkm"]],
+     kreisfrei[["AGS8", "year", "area_qkm"]]],
+    ignore_index=True,
+)
 area = area.drop_duplicates(subset=["AGS8", "year"])
+
+print(f"Kreisfreie Städte identified: {kreisfrei['ags'].nunique()}")
 
 # Zero area is a data artifact; treat as missing
 area.loc[area["area_qkm"] == 0, "area_qkm"] = float("nan")
