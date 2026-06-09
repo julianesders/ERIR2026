@@ -196,7 +196,7 @@ dict <- c(
   sk_sq_z         = "Steuerkraft sq. (z, L1)",
   bev_z           = "BEV stock p100k (z, L1)",
   chg_z           = "Charging pts p100k (z, L1)",
-  pers_z          = "Municipal personnel VZE (z, L1)"
+  pers_z          = "Municipal personnel VZE p100k (z, L1)"
 )
 
 tab_note <- paste0(
