@@ -45,19 +45,15 @@ cat(sprintf(
 ))
 
 # -- Standardise continuous regressors on the full estimation sample -----------
-# sk_sq_z built from sk_z so the polynomial is internally consistent.
 # eco_index_L1 already standardised via PCA; no rescaling needed.
 
 z <- function(x) as.numeric(scale(x))
 
 ph[, log_dens_z := z(log_pop_dens)]
 ph[, sk_z       := z(log_steuerkraft_L1)]
-ph[, sk_sq_z    := sk_z^2]
 ph[, bev_z      := z(log1p(bev_stock_p100k_L1))]
 ph[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 
-sk_mean <- mean(ph$log_steuerkraft_L1, na.rm = TRUE)
-sk_sd   <- sd(ph$log_steuerkraft_L1,   na.rm = TRUE)
 
 # -- Stadtstaaten exclusion for personnel specs --------------------------------
 # Hamburg (02), Bremen (04), Berlin (11): n_vze_personal conflates
@@ -66,14 +62,10 @@ sk_sd   <- sd(ph$log_steuerkraft_L1,   na.rm = TRUE)
 STADTSTAATEN <- c("02", "04", "11")
 ph_ns <- ph[!(AGS2 %in% STADTSTAATEN)]
 ph_ns[, sk_z       := z(log_steuerkraft_L1)]   # re-z-score on restricted sample
-ph_ns[, sk_sq_z    := sk_z^2]
 ph_ns[, log_dens_z := z(log_pop_dens)]
 ph_ns[, bev_z      := z(log1p(bev_stock_p100k_L1))]
 ph_ns[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 ph_ns[, pers_z     := z(log1p(n_vze_personal_L1))]
-
-sk_mean_ns <- mean(ph_ns$log_steuerkraft_L1, na.rm = TRUE)
-sk_sd_ns   <- sd(ph_ns$log_steuerkraft_L1,   na.rm = TRUE)
 
 cat(sprintf(
   "No-Stadtstaaten: %d obs dropped | %d obs | %d AGS8 | %d onsets\n",
@@ -90,19 +82,19 @@ cat(sprintf(
 
 f_eco_a2 <- emk_absorbing ~
   log_dens_z + state_gruene_L1 +
-  eco_index_L1 + sk_z + sk_sq_z | year + AGS2
+  eco_index_L1 + sk_z | year + AGS2
 
 f_comp_a2 <- emk_absorbing ~
   log_dens_z + state_gruene_L1 +
-  bev_z + chg_z + sk_z + sk_sq_z | year + AGS2
+  bev_z + chg_z + sk_z | year + AGS2
 
 f_eco_pers <- emk_absorbing ~
   log_dens_z + state_gruene_L1 +
-  eco_index_L1 + sk_z + sk_sq_z + pers_z | year + AGS2
+  eco_index_L1 + sk_z + pers_z | year + AGS2
 
 f_comp_pers <- emk_absorbing ~
   log_dens_z + state_gruene_L1 +
-  bev_z + chg_z + sk_z + sk_sq_z + pers_z | year + AGS2
+  bev_z + chg_z + sk_z + pers_z | year + AGS2
 
 # -- Estimation ----------------------------------------------------------------
 
@@ -135,40 +127,13 @@ for (s in list(
   list(m_lgt_comp_pers, "logit    comp+pers  AGS2   no-Stadtstaaten")
 )) cat(sprintf("  %-48s n = %d\n", s[[2]], nobs(s[[1]])))
 
-# -- Steuerkraft turning points ------------------------------------------------
-# tp_z = -b_sk / (2 * b_sk_sq); back-convert from z-scores to EUR/capita.
-# A turning point outside the 1-99 pct data range is not in-sample support.
-
-tp <- function(m, mu, sig) {
-  b <- coef(m)
-  if (!all(c("sk_z", "sk_sq_z") %in% names(b))) return(NA_real_)
-  exp((-b["sk_z"] / (2 * b["sk_sq_z"])) * sig + mu)  # back-transform from log scale
-}
-
-sk_range <- exp(quantile(ph$log_steuerkraft_L1, c(0.01, 0.99), na.rm = TRUE))
-
-cat("\nSteuerkraft turning points (EUR/capita):\n")
-for (s in list(
-  list(m_cll_eco_a2,    sk_mean,    sk_sd,    "cloglog eco        AGS2 full   "),
-  list(m_cll_comp_a2,   sk_mean,    sk_sd,    "cloglog comp       AGS2 full   "),
-  list(m_cll_eco_pers,  sk_mean_ns, sk_sd_ns, "cloglog eco+pers   AGS2 no-SS  "),
-  list(m_cll_comp_pers, sk_mean_ns, sk_sd_ns, "cloglog comp+pers  AGS2 no-SS  ")
-)) {
-  val     <- tp(s[[1]], s[[2]], s[[3]])
-  in_rng  <- if (!is.na(val)) ifelse(val >= sk_range[1] & val <= sk_range[2], "", " [out of range]") else ""
-  cat(sprintf("  %-35s %7.0f EUR/capita%s\n", s[[4]], val, in_rng))
-}
-cat(sprintf("  Data range [p1, p99]:               [%7.0f, %7.0f] EUR/capita\n",
-  sk_range[1], sk_range[2]))
-
 # -- Output tables -------------------------------------------------------------
 
 dict <- c(
   log_dens_z      = "Log pop. density (z)",
   state_gruene_L1 = "State Gruene vote share (L1)",
   eco_index_L1    = "EV ecosystem index PCA (L1)",
-  sk_z            = "log Steuerkraft (z, L1)",
-  sk_sq_z         = "log Steuerkraft sq. (z, L1)",
+  sk_z            = "log1p Steuerkraft (z, L1)",
   bev_z           = "log(1+BEV stock p100k) (z, L1)",
   chg_z           = "log(1+Charging pts p100k) (z, L1)",
   pers_z          = "log(1+Municipal personnel VZE p100k) (z, L1)"

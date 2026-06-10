@@ -207,11 +207,8 @@ print(f"bev_stock_p100k NaN after interpolation: {_bev_holes} "
 # Population density (log): population / land area in km²
 panel["log_pop_dens"] = np.log(panel["xbev"] / panel["area_qkm"])
 
-# Log Steuerkraft: negative values (rare, arise from fiscal equalization) become NaN.
-panel["log_steuerkraft"] = np.log(panel["q_gest_bev"])
-
-# Squared log Steuerkraft for the quadratic hazard specification.
-panel["steuerkraft_sq"] = panel["log_steuerkraft"] ** 2
+# Log Steuerkraft: log1p handles zeros; negatives <= -1 become NaN (fiscal equalization).
+panel["log_steuerkraft"] = np.log1p(panel["q_gest_bev"])
 
 # ── EV ecosystem index: first PC of (bev_stock_p100k, ev_chargepoints_p100k) ─
 
@@ -247,7 +244,6 @@ for col in ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_a
 
 LAG_VARS = [
     "q_gest_bev",      # steuerkraft (raw, kept for reference)
-    "steuerkraft_sq",
     "log_steuerkraft",
     "eco_index",
     "bev_stock_p100k",
@@ -276,7 +272,7 @@ for k in [1, 2, 3]:
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
 derived_cols  = [
-    "area_qkm", "log_pop_dens", "steuerkraft_sq", "log_steuerkraft",
+    "area_qkm", "log_pop_dens", "log_steuerkraft",
     "bev_stock_p100k", "bev_neuzulassungen_p100k",
     "bev_corporate_p100k", "bev_private_p100k",
     "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
