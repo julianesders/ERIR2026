@@ -62,8 +62,7 @@ sk_sd   <- sd(ph$log_steuerkraft_L1,   na.rm = TRUE)
 
 # -- Stadtstaaten exclusion for personnel specs --------------------------------
 # Hamburg (02), Bremen (04), Berlin (11): n_vze_personal conflates
-# municipal/Lander roles and is measured at AGS5 -> collinear with AGS5 FE.
-# Personnel specs therefore use AGS2 FE and the no-Stadtstaaten sample.
+# municipal and Länder roles; personnel specs use the no-Stadtstaaten sample.
 
 STADTSTAATEN <- c("02", "04", "11")
 ph_ns <- ph[!(AGS2 %in% STADTSTAATEN)]
@@ -88,27 +87,16 @@ cat(sprintf(
 # Two ecosystem variants:
 #   eco  — PCA composite index (eco_index_L1)
 #   comp — two separate indicators (bev_z, chg_z)
-# Two FE variants:
-#   AGS2 — cross-Bundesland variation (16 states)
-#   AGS5 — within-Kreis variation (absorbs AGS5-constant regressors)
-# Personnel variant: AGS2 FE + no-Stadtstaaten sample only (see above)
-# Clustering at AGS5: coarsest level at which treatment assignment occurs.
+# Personnel variant: no-Stadtstaaten sample only (see above)
+# All specs: year + AGS2 FE; clustering at AGS5.
 
 f_eco_a2 <- emk_absorbing ~
   log_dens_z + pendler_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z | year + AGS2
 
-f_eco_a5 <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
-  eco_index_L1 + sk_z + sk_sq_z | year + AGS5
-
 f_comp_a2 <- emk_absorbing ~
   log_dens_z + pendler_z + state_gruene_L1 +
   bev_z + chg_z + sk_z + sk_sq_z | year + AGS2
-
-f_comp_a5 <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
-  bev_z + chg_z + sk_z + sk_sq_z | year + AGS5
 
 f_eco_pers <- emk_absorbing ~
   log_dens_z + pendler_z + state_gruene_L1 +
@@ -125,17 +113,13 @@ lgt <- binomial("logit")     # robustness
 
 cat("\nEstimating cloglog models...\n")
 m_cll_eco_a2    <- feglm(f_eco_a2,    data = ph,    family = cll, cluster = ~AGS5)
-m_cll_eco_a5    <- feglm(f_eco_a5,    data = ph,    family = cll, cluster = ~AGS5)
 m_cll_comp_a2   <- feglm(f_comp_a2,   data = ph,    family = cll, cluster = ~AGS5)
-m_cll_comp_a5   <- feglm(f_comp_a5,   data = ph,    family = cll, cluster = ~AGS5)
 m_cll_eco_pers  <- feglm(f_eco_pers,  data = ph_ns, family = cll, cluster = ~AGS5)
 m_cll_comp_pers <- feglm(f_comp_pers, data = ph_ns, family = cll, cluster = ~AGS5)
 
 cat("Estimating logit models...\n")
 m_lgt_eco_a2    <- feglm(f_eco_a2,    data = ph,    family = lgt, cluster = ~AGS5)
-m_lgt_eco_a5    <- feglm(f_eco_a5,    data = ph,    family = lgt, cluster = ~AGS5)
 m_lgt_comp_a2   <- feglm(f_comp_a2,   data = ph,    family = lgt, cluster = ~AGS5)
-m_lgt_comp_a5   <- feglm(f_comp_a5,   data = ph,    family = lgt, cluster = ~AGS5)
 m_lgt_eco_pers  <- feglm(f_eco_pers,  data = ph_ns, family = lgt, cluster = ~AGS5)
 m_lgt_comp_pers <- feglm(f_comp_pers, data = ph_ns, family = lgt, cluster = ~AGS5)
 
@@ -144,15 +128,11 @@ m_lgt_comp_pers <- feglm(f_comp_pers, data = ph_ns, family = lgt, cluster = ~AGS
 cat("\nObservations used per model:\n")
 for (s in list(
   list(m_cll_eco_a2,    "cloglog  eco        AGS2   full sample"),
-  list(m_cll_eco_a5,    "cloglog  eco        AGS5   full sample"),
   list(m_cll_comp_a2,   "cloglog  comp       AGS2   full sample"),
-  list(m_cll_comp_a5,   "cloglog  comp       AGS5   full sample"),
   list(m_cll_eco_pers,  "cloglog  eco+pers   AGS2   no-Stadtstaaten"),
   list(m_cll_comp_pers, "cloglog  comp+pers  AGS2   no-Stadtstaaten"),
   list(m_lgt_eco_a2,    "logit    eco        AGS2   full sample"),
-  list(m_lgt_eco_a5,    "logit    eco        AGS5   full sample"),
   list(m_lgt_comp_a2,   "logit    comp       AGS2   full sample"),
-  list(m_lgt_comp_a5,   "logit    comp       AGS5   full sample"),
   list(m_lgt_eco_pers,  "logit    eco+pers   AGS2   no-Stadtstaaten"),
   list(m_lgt_comp_pers, "logit    comp+pers  AGS2   no-Stadtstaaten")
 )) cat(sprintf("  %-48s n = %d\n", s[[2]], nobs(s[[1]])))
@@ -172,9 +152,7 @@ sk_range <- exp(quantile(ph$log_steuerkraft_L1, c(0.01, 0.99), na.rm = TRUE))
 cat("\nSteuerkraft turning points (EUR/capita):\n")
 for (s in list(
   list(m_cll_eco_a2,    sk_mean,    sk_sd,    "cloglog eco        AGS2 full   "),
-  list(m_cll_eco_a5,    sk_mean,    sk_sd,    "cloglog eco        AGS5 full   "),
   list(m_cll_comp_a2,   sk_mean,    sk_sd,    "cloglog comp       AGS2 full   "),
-  list(m_cll_comp_a5,   sk_mean,    sk_sd,    "cloglog comp       AGS5 full   "),
   list(m_cll_eco_pers,  sk_mean_ns, sk_sd_ns, "cloglog eco+pers   AGS2 no-SS  "),
   list(m_cll_comp_pers, sk_mean_ns, sk_sd_ns, "cloglog comp+pers  AGS2 no-SS  ")
 )) {
@@ -201,25 +179,22 @@ dict <- c(
 
 tab_note <- paste0(
   "Discrete-time hazard on AGS8 risk set (year >= 2015). ",
-  "Cols (5)-(6): Hamburg, Bremen, Berlin excluded (personnel measured at AGS5). ",
-  "year FE = non-parametric baseline hazard. ",
+  "Cols (3)-(4): Hamburg, Bremen, Berlin excluded (personnel conflates municipal/Länder roles). ",
+  "year + AGS2 FE throughout. year FE = non-parametric baseline hazard. ",
   "SEs clustered at AGS5."
 )
 
 col_labels <- c(
-  "(1) Eco/AGS2", "(2) Eco/AGS5",
-  "(3) Comp/AGS2", "(4) Comp/AGS5",
-  "(5) Eco+P/AGS2", "(6) Comp+P/AGS2"
+  "(1) Eco", "(2) Comp",
+  "(3) Eco+P", "(4) Comp+P"
 )
 
 cll_models <- list(
-  m_cll_eco_a2, m_cll_eco_a5,
-  m_cll_comp_a2, m_cll_comp_a5,
+  m_cll_eco_a2, m_cll_comp_a2,
   m_cll_eco_pers, m_cll_comp_pers
 )
 lgt_models <- list(
-  m_lgt_eco_a2, m_lgt_eco_a5,
-  m_lgt_comp_a2, m_lgt_comp_a5,
+  m_lgt_eco_a2, m_lgt_comp_a2,
   m_lgt_eco_pers, m_lgt_comp_pers
 )
 
