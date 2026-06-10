@@ -39,7 +39,9 @@ panel <- panel[year >= 2015]
 # bev_neuzulassungen_p100k, bev_corporate_p100k, bev_private_p100k already
 # computed in the Python merge step; no need to reconstruct from raw counts.
 
-panel[, log_bev1 := log1p(bev_neuzulassungen_p100k)]
+panel[, log_bev1         := log1p(bev_neuzulassungen_p100k)]
+panel[, log_bev_corp     := log1p(bev_corporate_p100k)]
+panel[, log_bev_private  := log1p(bev_private_p100k)]
 
 # ICE placebo: invert EV share applied to existing BEV neuzulassungen p100k.
 # Verify scale before trusting these values.
@@ -112,8 +114,9 @@ panel_direct[
 # -- Estimation constants and helpers -----------------------------------------
 
 OUTCOMES <- c(
+  "log_bev1", "log_bev_corp", "log_bev_private",
   "bev_neuzulassungen_p100k", "bev_corporate_p100k", "bev_private_p100k",
-  "log_bev1", "ice_overall_p100k"
+  "ice_overall_p100k"
 )
 ES_MIN <- -4L
 ES_MAX <-  4L
@@ -223,10 +226,12 @@ es_plot <- function(plot_dt, title, ylab = "ATT (per 100k)") {
 # -- Label maps ----------------------------------------------------------------
 
 OUTCOME_LABELS <- c(
+  log_bev1                 = "log(1 + BEV new registrations per 100k)",
+  log_bev_corp             = "log(1 + BEV new registrations, corporate, per 100k)",
+  log_bev_private          = "log(1 + BEV new registrations, private, per 100k)",
   bev_neuzulassungen_p100k = "BEV new registrations (per 100k population)",
   bev_corporate_p100k      = "BEV new registrations, corporate (per 100k population)",
   bev_private_p100k        = "BEV new registrations, private households (per 100k population)",
-  log_bev1                 = "log(1 + BEV new registrations per 100k population)",
   ice_overall_p100k        = "ICE new registrations (per 100k population) — placebo outcome"
 )
 
@@ -267,7 +272,9 @@ ctrl_specs <- list(
 run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
   for (yname in outcomes) {
     ylab <- switch(yname,
-      log_bev1                  = "ATT (log BEV neuz. per 100k + 1)",
+      log_bev1                  = "ATT (log BEV neuz. overall per 100k + 1)",
+      log_bev_corp              = "ATT (log BEV neuz. corporate per 100k + 1)",
+      log_bev_private           = "ATT (log BEV neuz. private per 100k + 1)",
       ice_overall_p100k         = "ATT (ICE neuz. per 100k) [placebo]",
       bev_neuzulassungen_p100k  = "ATT (BEV neuz. overall per 100k)",
       bev_corporate_p100k       = "ATT (BEV neuz. corporate per 100k)",

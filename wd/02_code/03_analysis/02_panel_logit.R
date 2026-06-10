@@ -54,8 +54,8 @@ ph[, log_dens_z := z(log_pop_dens)]
 ph[, pendler_z  := z(q_pendlersaldo)]
 ph[, sk_z       := z(q_gest_bev_L1)]
 ph[, sk_sq_z    := sk_z^2]
-ph[, bev_z      := z(bev_stock_p100k_L1)]
-ph[, chg_z      := z(ev_chargepoints_p100k_L1)]
+ph[, bev_z      := z(log1p(bev_stock_p100k_L1))]
+ph[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 
 sk_mean <- mean(ph$q_gest_bev_L1, na.rm = TRUE)
 sk_sd   <- sd(ph$q_gest_bev_L1,   na.rm = TRUE)
@@ -71,9 +71,9 @@ ph_ns[, sk_z       := z(q_gest_bev_L1)]   # re-z-score on restricted sample
 ph_ns[, sk_sq_z    := sk_z^2]
 ph_ns[, log_dens_z := z(log_pop_dens)]
 ph_ns[, pendler_z  := z(q_pendlersaldo)]
-ph_ns[, bev_z      := z(bev_stock_p100k_L1)]
-ph_ns[, chg_z      := z(ev_chargepoints_p100k_L1)]
-ph_ns[, pers_z     := z(n_vze_personal_L1)]
+ph_ns[, bev_z      := z(log1p(bev_stock_p100k_L1))]
+ph_ns[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
+ph_ns[, pers_z     := z(log1p(n_vze_personal_L1))]
 
 sk_mean_ns <- mean(ph_ns$q_gest_bev_L1, na.rm = TRUE)
 sk_sd_ns   <- sd(ph_ns$q_gest_bev_L1,   na.rm = TRUE)
@@ -194,9 +194,9 @@ dict <- c(
   eco_index_L1    = "EV ecosystem index PCA (L1)",
   sk_z            = "Steuerkraft (z, L1)",
   sk_sq_z         = "Steuerkraft sq. (z, L1)",
-  bev_z           = "BEV stock p100k (z, L1)",
-  chg_z           = "Charging pts p100k (z, L1)",
-  pers_z          = "Municipal personnel VZE p100k (z, L1)"
+  bev_z           = "log(1+BEV stock p100k) (z, L1)",
+  chg_z           = "log(1+Charging pts p100k) (z, L1)",
+  pers_z          = "log(1+Municipal personnel VZE p100k) (z, L1)"
 )
 
 tab_note <- paste0(
