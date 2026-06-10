@@ -207,8 +207,8 @@ print(f"bev_stock_p100k NaN after interpolation: {_bev_holes} "
 # Population density (log): population / land area in km²
 panel["log_pop_dens"] = np.log(panel["xbev"] / panel["area_qkm"])
 
-# Log Steuerkraft: log1p handles zeros; negatives <= -1 become NaN (fiscal equalization).
-panel["log_steuerkraft"] = np.log1p(panel["q_gest_bev"])
+# Log Steuerkraft: negatives (rare, fiscal equalization) clipped to 0 before log1p.
+panel["log_steuerkraft"] = np.log1p(panel["q_gest_bev"].clip(lower=0))
 
 # ── EV ecosystem index: first PC of (bev_stock_p100k, ev_chargepoints_p100k) ─
 
