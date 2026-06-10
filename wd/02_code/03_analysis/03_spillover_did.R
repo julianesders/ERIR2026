@@ -125,8 +125,9 @@ ES_MAX <-  4L
 # 1999 clustered bootstrap draws; cband=TRUE for simultaneous confidence bands.
 CS_BITERS <- 1999L
 
-run_cs <- function(yname, data_dt, control_group) {
-  att <- att_gt(
+# Returns raw att_gt object so we can aggregate both ways without re-running bootstrap.
+run_cs_attgt <- function(yname, data_dt, control_group) {
+  att_gt(
     yname         = yname,
     gname         = "first_treat_cs",
     idname        = "ags8_id",
@@ -139,11 +140,9 @@ run_cs <- function(yname, data_dt, control_group) {
     biters        = CS_BITERS,
     print_details = FALSE
   )
-  aggte(att, type = "dynamic", min_e = ES_MIN, max_e = ES_MAX,
-        balance_e = TRUE, na.rm = TRUE, cband = TRUE)
 }
 
-# Borusyak-Jaravel-Spiess: did_imputation
+# Borusyak-Jaravel-Spiess: event study (horizon-specific)
 run_bor <- function(yname, data_dt) {
   did_imputation(
     data        = as.data.frame(data_dt),
@@ -155,6 +154,19 @@ run_bor <- function(yname, data_dt) {
     pretrends   = TRUE,
     cluster_var = "AGS5"
   )
+}
+
+# Borusyak-Jaravel-Spiess: overall ATT (pooled over all post-treatment periods)
+run_bor_att <- function(yname, data_dt) {
+  as.data.table(did_imputation(
+    data        = as.data.frame(data_dt),
+    yname       = yname,
+    gname       = "first_treat_bor",
+    tname       = "year",
+    idname      = "ags8_id",
+    horizon     = FALSE,
+    cluster_var = "AGS5"
+  ))
 }
 
 # Convert aggte output to plotting data.table
@@ -270,6 +282,9 @@ ctrl_specs <- list(
 # -- Estimation loop -----------------------------------------------------------
 
 run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
+  att_rows   <- list()
+  sample_tag <- if (nchar(file_suffix)) sub("^_", "", file_suffix) else "full"
+
   for (yname in outcomes) {
     ylab <- switch(yname,
       log_bev1                  = "ATT (log BEV neuz. overall per 100k + 1)",
@@ -289,17 +304,61 @@ run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
       data_use <- if (spec$ever_only)
         panel_use[ever_treated == TRUE] else panel_use
 
-      n_treated <- data_use[ever_treated == TRUE, uniqueN(ags8_id)]
+      n_treated <- data_use[ever_treated == TRUE,  uniqueN(ags8_id)]
       n_control <- data_use[ever_treated == FALSE, uniqueN(ags8_id)]
       cat(sprintf("  %-30s | %-10s | %d treated + %d control units\n",
                   yname, cid, n_treated, n_control))
 
-      es_cs  <- tryCatch(run_cs(yname, data_use, spec$cg), error = function(e) {
+      # CS: run att_gt once, then aggregate for event study and simple ATT
+      att_gt_obj <- tryCatch(run_cs_attgt(yname, data_use, spec$cg), error = function(e) {
         cat(sprintf("    CS error: %s\n", conditionMessage(e))); NULL
       })
+      es_cs <- if (!is.null(att_gt_obj))
+        tryCatch(
+          aggte(att_gt_obj, type = "dynamic", min_e = ES_MIN, max_e = ES_MAX,
+                balance_e = TRUE, na.rm = TRUE, cband = TRUE),
+          error = function(e) { cat(sprintf("    CS dynamic error: %s\n", conditionMessage(e))); NULL }
+        )
+      att_cs_simple <- if (!is.null(att_gt_obj))
+        tryCatch(
+          aggte(att_gt_obj, type = "simple", na.rm = TRUE),
+          error = function(e) { cat(sprintf("    CS simple error: %s\n", conditionMessage(e))); NULL }
+        )
+
+      # BJS: event study and overall ATT (separate calls; horizon=FALSE is cheap)
       es_bor <- tryCatch(run_bor(yname, data_use), error = function(e) {
         cat(sprintf("    Borusyak error: %s\n", conditionMessage(e))); NULL
       })
+      att_bor <- tryCatch(run_bor_att(yname, data_use), error = function(e) {
+        cat(sprintf("    Borusyak ATT error: %s\n", conditionMessage(e))); NULL
+      })
+
+      # Collect simple ATT estimates
+      if (!is.null(att_cs_simple)) {
+        att_rows[[length(att_rows) + 1L]] <- data.table(
+          outcome   = yname,  ctrl_id = cid,  sample = sample_tag,
+          estimator = "Callaway-Sant'Anna",
+          att   = att_cs_simple$overall.att,
+          se    = att_cs_simple$overall.se,
+          ci_lo = att_cs_simple$overall.att - 1.96 * att_cs_simple$overall.se,
+          ci_hi = att_cs_simple$overall.att + 1.96 * att_cs_simple$overall.se
+        )
+        cat(sprintf("    CS  ATT = %+.4f  SE = %.4f\n",
+                    att_cs_simple$overall.att, att_cs_simple$overall.se))
+      }
+      if (!is.null(att_bor) && "ATT" %in% att_bor$term) {
+        bor_row <- att_bor[term == "ATT"]
+        att_rows[[length(att_rows) + 1L]] <- data.table(
+          outcome   = yname,  ctrl_id = cid,  sample = sample_tag,
+          estimator = "Borusyak et al.",
+          att   = bor_row$estimate,
+          se    = bor_row$std.error,
+          ci_lo = bor_row$estimate - 1.96 * bor_row$std.error,
+          ci_hi = bor_row$estimate + 1.96 * bor_row$std.error
+        )
+        cat(sprintf("    BJS ATT = %+.4f  SE = %.4f\n",
+                    bor_row$estimate, bor_row$std.error))
+      }
 
       parts <- Filter(Negate(is.null), list(
         if (!is.null(es_cs))  cs_to_dt(es_cs,  "Callaway-Sant'Anna") else NULL,
@@ -352,12 +411,26 @@ run_and_plot <- function(panel_use, outcomes, ctrl_specs, file_suffix = "") {
     fname <- sprintf("es_%s%s.pdf", yname, file_suffix)
     ggsave(file.path(out_dir, fname), p, width = 15, height = 5)
   }
+
+  if (length(att_rows) > 0L) rbindlist(att_rows) else data.table()
 }
 
 cat("\n=== Primary estimation (all treated, broadcast included) ===\n")
-run_and_plot(panel, OUTCOMES, ctrl_specs)
+att_full   <- run_and_plot(panel, OUTCOMES, ctrl_specs)
 
 cat("\n=== Broadcasting sensitivity (direct AGS8-assigned only) ===\n")
-run_and_plot(panel_direct, c("bev_neuzulassungen_p100k"), ctrl_specs, "_direct")
+att_direct <- run_and_plot(panel_direct, c("bev_neuzulassungen_p100k"), ctrl_specs, "_direct")
 
-cat(sprintf("\nAll plots written to: %s\n", out_dir))
+att_all <- rbindlist(list(att_full, att_direct), fill = TRUE)
+fwrite(att_all, file.path(out_dir, "att_estimates.csv"))
+
+cat("\n=== ATT estimates (simple aggregation) ===\n")
+print(att_all[, .(
+  outcome, ctrl_id, sample, estimator,
+  att   = round(att,   4),
+  se    = round(se,    4),
+  ci_lo = round(ci_lo, 4),
+  ci_hi = round(ci_hi, 4)
+)])
+cat(sprintf("\nATT table written to:  %s\n", file.path(out_dir, "att_estimates.csv")))
+cat(sprintf("All plots written to:  %s\n", out_dir))
