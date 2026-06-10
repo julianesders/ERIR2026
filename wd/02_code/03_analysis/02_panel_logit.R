@@ -51,7 +51,6 @@ cat(sprintf(
 z <- function(x) as.numeric(scale(x))
 
 ph[, log_dens_z := z(log_pop_dens)]
-ph[, pendler_z  := z(q_pendlersaldo)]
 ph[, sk_z       := z(log_steuerkraft_L1)]
 ph[, sk_sq_z    := sk_z^2]
 ph[, bev_z      := z(log1p(bev_stock_p100k_L1))]
@@ -69,7 +68,6 @@ ph_ns <- ph[!(AGS2 %in% STADTSTAATEN)]
 ph_ns[, sk_z       := z(log_steuerkraft_L1)]   # re-z-score on restricted sample
 ph_ns[, sk_sq_z    := sk_z^2]
 ph_ns[, log_dens_z := z(log_pop_dens)]
-ph_ns[, pendler_z  := z(q_pendlersaldo)]
 ph_ns[, bev_z      := z(log1p(bev_stock_p100k_L1))]
 ph_ns[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 ph_ns[, pers_z     := z(log1p(n_vze_personal_L1))]
@@ -91,19 +89,19 @@ cat(sprintf(
 # All specs: year + AGS2 FE; clustering at AGS5.
 
 f_eco_a2 <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
+  log_dens_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z | year + AGS2
 
 f_comp_a2 <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
+  log_dens_z + state_gruene_L1 +
   bev_z + chg_z + sk_z + sk_sq_z | year + AGS2
 
 f_eco_pers <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
+  log_dens_z + state_gruene_L1 +
   eco_index_L1 + sk_z + sk_sq_z + pers_z | year + AGS2
 
 f_comp_pers <- emk_absorbing ~
-  log_dens_z + pendler_z + state_gruene_L1 +
+  log_dens_z + state_gruene_L1 +
   bev_z + chg_z + sk_z + sk_sq_z + pers_z | year + AGS2
 
 # -- Estimation ----------------------------------------------------------------
@@ -167,7 +165,6 @@ cat(sprintf("  Data range [p1, p99]:               [%7.0f, %7.0f] EUR/capita\n",
 
 dict <- c(
   log_dens_z      = "Log pop. density (z)",
-  pendler_z       = "Commuter balance (z)",
   state_gruene_L1 = "State Gruene vote share (L1)",
   eco_index_L1    = "EV ecosystem index PCA (L1)",
   sk_z            = "log Steuerkraft (z, L1)",
