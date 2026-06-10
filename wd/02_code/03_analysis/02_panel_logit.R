@@ -52,13 +52,13 @@ z <- function(x) as.numeric(scale(x))
 
 ph[, log_dens_z := z(log_pop_dens)]
 ph[, pendler_z  := z(q_pendlersaldo)]
-ph[, sk_z       := z(q_gest_bev_L1)]
+ph[, sk_z       := z(log_steuerkraft_L1)]
 ph[, sk_sq_z    := sk_z^2]
 ph[, bev_z      := z(log1p(bev_stock_p100k_L1))]
 ph[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 
-sk_mean <- mean(ph$q_gest_bev_L1, na.rm = TRUE)
-sk_sd   <- sd(ph$q_gest_bev_L1,   na.rm = TRUE)
+sk_mean <- mean(ph$log_steuerkraft_L1, na.rm = TRUE)
+sk_sd   <- sd(ph$log_steuerkraft_L1,   na.rm = TRUE)
 
 # -- Stadtstaaten exclusion for personnel specs --------------------------------
 # Hamburg (02), Bremen (04), Berlin (11): n_vze_personal conflates
@@ -67,7 +67,7 @@ sk_sd   <- sd(ph$q_gest_bev_L1,   na.rm = TRUE)
 
 STADTSTAATEN <- c("02", "04", "11")
 ph_ns <- ph[!(AGS2 %in% STADTSTAATEN)]
-ph_ns[, sk_z       := z(q_gest_bev_L1)]   # re-z-score on restricted sample
+ph_ns[, sk_z       := z(log_steuerkraft_L1)]   # re-z-score on restricted sample
 ph_ns[, sk_sq_z    := sk_z^2]
 ph_ns[, log_dens_z := z(log_pop_dens)]
 ph_ns[, pendler_z  := z(q_pendlersaldo)]
@@ -75,8 +75,8 @@ ph_ns[, bev_z      := z(log1p(bev_stock_p100k_L1))]
 ph_ns[, chg_z      := z(log1p(ev_chargepoints_p100k_L1))]
 ph_ns[, pers_z     := z(log1p(n_vze_personal_L1))]
 
-sk_mean_ns <- mean(ph_ns$q_gest_bev_L1, na.rm = TRUE)
-sk_sd_ns   <- sd(ph_ns$q_gest_bev_L1,   na.rm = TRUE)
+sk_mean_ns <- mean(ph_ns$log_steuerkraft_L1, na.rm = TRUE)
+sk_sd_ns   <- sd(ph_ns$log_steuerkraft_L1,   na.rm = TRUE)
 
 cat(sprintf(
   "No-Stadtstaaten: %d obs dropped | %d obs | %d AGS8 | %d onsets\n",
@@ -164,10 +164,10 @@ for (s in list(
 tp <- function(m, mu, sig) {
   b <- coef(m)
   if (!all(c("sk_z", "sk_sq_z") %in% names(b))) return(NA_real_)
-  (-b["sk_z"] / (2 * b["sk_sq_z"])) * sig + mu
+  exp((-b["sk_z"] / (2 * b["sk_sq_z"])) * sig + mu)  # back-transform from log scale
 }
 
-sk_range <- quantile(ph$q_gest_bev_L1, c(0.01, 0.99), na.rm = TRUE)
+sk_range <- exp(quantile(ph$log_steuerkraft_L1, c(0.01, 0.99), na.rm = TRUE))
 
 cat("\nSteuerkraft turning points (EUR/capita):\n")
 for (s in list(
@@ -192,8 +192,8 @@ dict <- c(
   pendler_z       = "Commuter balance (z)",
   state_gruene_L1 = "State Gruene vote share (L1)",
   eco_index_L1    = "EV ecosystem index PCA (L1)",
-  sk_z            = "Steuerkraft (z, L1)",
-  sk_sq_z         = "Steuerkraft sq. (z, L1)",
+  sk_z            = "log Steuerkraft (z, L1)",
+  sk_sq_z         = "log Steuerkraft sq. (z, L1)",
   bev_z           = "log(1+BEV stock p100k) (z, L1)",
   chg_z           = "log(1+Charging pts p100k) (z, L1)",
   pers_z          = "log(1+Municipal personnel VZE p100k) (z, L1)"
