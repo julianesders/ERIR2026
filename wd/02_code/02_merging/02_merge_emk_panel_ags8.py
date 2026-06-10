@@ -214,7 +214,7 @@ panel["steuerkraft_sq"] = panel["q_gest_bev"] ** 2
 
 eco_vars = ["bev_stock_p100k", "ev_chargepoints_p100k"]
 eco_mask = panel[eco_vars].notna().all(axis=1)
-eco_data = panel.loc[eco_mask, eco_vars].values
+eco_data = np.log1p(panel.loc[eco_mask, eco_vars].values)
 
 scaler    = StandardScaler()
 pca       = PCA(n_components=1)
