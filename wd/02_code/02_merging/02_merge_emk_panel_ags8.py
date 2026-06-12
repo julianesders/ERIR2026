@@ -54,10 +54,15 @@ kba = pd.read_csv(
         "AGS8", "year",
         "B_elektro_overall",
         "N_elektro_overall", "N_elektro_private", "N_elektro_corporate",
+        "N_benzin_diesel_overall",
         "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
     ],
 )
 kba["AGS8"] = kba["AGS8"].str.zfill(8)
+
+# Inf can arise from share denominators of 0 in the KBA aggregate; treat as NA.
+for _c in ["N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate"]:
+    kba[_c] = kba[_c].replace([np.inf, -np.inf], np.nan)
 
 area = pd.read_csv(
     f"{DATA_DIR_INTERMEDIATE}/area/area_ags8_panel.csv",
@@ -79,13 +84,15 @@ emk["end_year"]       = emk["laufzeit_end"].dt.year
 
 
 ########################################
-########   Activity indicators  ########
+########   Treatment indicators  #######
 ########################################
 
 
 # 187 projects matched directly to AGS8; 54 are Kreis-level (AGS8 = NaN).
 # Kreis-level projects are broadcast to every Gemeinde in that Kreis so
-# that treatment is defined at the Gemeinde level throughout.
+# that treatment is also defined at the Gemeinde level. We track DIRECT and
+# BROAD (direct ∪ Kreis-broadcast) separately throughout: the hazard risk set
+# uses DIRECT events, the DiD main spec uses BROAD treatment.
 
 ags_map = inkar[["AGS8", "AGS5"]].drop_duplicates()
 
@@ -103,6 +110,7 @@ print(f"Kreis-level projects:            {len(emk_kreis)} "
 
 panel_years = inkar[["AGS8", "year"]].drop_duplicates()
 
+# Active / started indicators, broad coverage (direct ∪ Kreis broadcast)
 activity = (
     panel_years
     .merge(emk_all[["AGS8", "start_year", "end_year"]], on="AGS8", how="left")
@@ -121,26 +129,36 @@ activity = (
 for col in ["emk_active", "n_emk_active", "emk_absorbing", "emk_absorbing_n"]:
     activity[col] = activity[col].astype(int)
 
+# Per-AGS8 first-treatment years for hazard / DiD frames
+first_direct = (
+    emk_direct.groupby("AGS8", as_index=False)["start_year"].min()
+              .rename(columns={"start_year": "first_treat_direct"})
+)
+first_broad = (
+    emk_all.groupby("AGS8", as_index=False)["start_year"].min()
+           .rename(columns={"start_year": "first_treat_broad"})
+)
 
-########################################
-########  Time-invariant EMK attrs  ####
-########################################
+# Kreis-funded year (AGS5-level): independent of own direct status.
+# Used as a strict-past covariate in the hazard: 1{kreis_funded_year < t}.
+first_kreis = (
+    emk_kreis.groupby("AGS5", as_index=False)["start_year"].min()
+             .rename(columns={"start_year": "kreis_funded_year"})
+)
 
+treat_map = (
+    ags_map
+    .merge(first_direct, on="AGS8", how="left")
+    .merge(first_broad,  on="AGS8", how="left")
+    .merge(first_kreis,  on="AGS5", how="left")
+)
+treat_map["treat_type"] = np.where(
+    treat_map["first_treat_direct"].notna(), "direct",
+    np.where(treat_map["first_treat_broad"].notna(), "broadcast_only", "never"),
+)
 
-tag_cols   = [c for c in emk.columns if c.startswith("tag_")]
-space_cols = [c for c in emk.columns if c.startswith("space_")]
-for c in tag_cols + space_cols:
-    emk[c] = pd.to_numeric(emk[c], errors="coerce")
-emk["gesamtmittel"] = pd.to_numeric(emk["gesamtmittel"], errors="coerce")
-emk["bundesmittel"] = pd.to_numeric(emk["bundesmittel"], errors="coerce")
-
-# Aggregate at Kreis level and broadcast to all Gemeinden via AGS5 join
-emk_attrs = emk.groupby("AGS5", as_index=False).agg(**{
-    "emk_gesamtmittel": ("gesamtmittel", "sum"),
-    "emk_bundesmittel": ("bundesmittel", "sum"),
-    "n_emk_total":      ("gesamtmittel", "count"),
-    **{c: (c, "max") for c in tag_cols + space_cols},
-})
+print("Treat-type counts (AGS8):")
+print(treat_map["treat_type"].value_counts().to_string())
 
 
 ########################################
@@ -149,8 +167,15 @@ emk_attrs = emk.groupby("AGS5", as_index=False).agg(**{
 
 
 panel = inkar.merge(activity, on=["AGS8", "year"], how="left")
-panel = panel.merge(emk_attrs, on="AGS5", how="left")
+panel = panel.merge(treat_map[
+    ["AGS8", "first_treat_direct", "first_treat_broad", "treat_type", "kreis_funded_year"]
+], on="AGS8", how="left")
+panel["treat_type"] = panel["treat_type"].fillna("never")
 panel["AGS2"] = panel["AGS8"].str[:2]
+
+# TODO: merge `modellregion_pre2015` (AGS5-level dummy) once supplied by user;
+# join on AGS5. Placeholder so downstream scripts can reference the column.
+panel["modellregion_pre2015"] = 0
 
 # Drop rows where population is missing — xbev is the denominator for all
 # per-capita variables; rows without it are uninformative.
@@ -176,26 +201,41 @@ panel["ev_chargepoints_p100k"] = panel["ev_chargepoints"] / panel["xbev"] * 100_
 panel = panel.merge(kba, on=["AGS8", "year"], how="left")
 
 # Interpolate raw KBA counts before per-capita division so the denominator
-# (population) stays year-specific. limit=2: fill at most 2 consecutive missing
-# years; limit_direction="both" covers interior gaps (linear), leading NAs
-# (backward constant from first value), and trailing NAs (forward constant).
-# Must happen before eco_index PCA so the fill propagates into the index and
-# subsequently into all _L1 lags.
-_kba_count_cols = [
-    "B_elektro_overall",
+# (population) stays year-specific. We record _imp flags so robustness can
+# drop filled cells (complete-case).
+#
+# Interpolation policy (plan v2):
+#   - N_* and N_ev_share_*  : interior-only linear, limit=2 (limit_area="inside")
+#   - B_elektro_overall     : limit_direction="both", limit=2 (stock)
+# Must run before eco_index PCA so the fill propagates into the index and lags.
+
+panel = panel.sort_values(["AGS8", "year"])
+
+_n_interior_cols = [
     "N_elektro_overall", "N_elektro_private", "N_elektro_corporate",
+    "N_benzin_diesel_overall",
     "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
 ]
-panel = panel.sort_values(["AGS8", "year"])
-for _col in _kba_count_cols:
+for _col in _n_interior_cols:
+    panel[f"{_col}_imp"] = panel[_col].isna()
     panel[_col] = panel.groupby("AGS8")[_col].transform(
-        lambda s: s.interpolate(method="linear", limit=2, limit_direction="both")
+        lambda s: s.interpolate(method="linear", limit=2, limit_area="inside")
     )
+    # An _imp cell is only "filled" if it became non-NaN after interpolation.
+    panel[f"{_col}_imp"] = panel[f"{_col}_imp"] & panel[_col].notna()
 
-panel["bev_stock_p100k"]          = panel["B_elektro_overall"]    / panel["xbev"] * 100_000
-panel["bev_neuzulassungen_p100k"] = panel["N_elektro_overall"]   / panel["xbev"] * 100_000
-panel["bev_corporate_p100k"]      = panel["N_elektro_corporate"] / panel["xbev"] * 100_000
-panel["bev_private_p100k"]        = panel["N_elektro_private"]   / panel["xbev"] * 100_000
+panel["B_elektro_overall_imp"] = panel["B_elektro_overall"].isna()
+panel["B_elektro_overall"] = panel.groupby("AGS8")["B_elektro_overall"].transform(
+    lambda s: s.interpolate(method="linear", limit=2, limit_direction="both")
+)
+panel["B_elektro_overall_imp"] = panel["B_elektro_overall_imp"] & panel["B_elektro_overall"].notna()
+
+panel["bev_stock_p100k"]           = panel["B_elektro_overall"]       / panel["xbev"] * 100_000
+panel["bev_neuzulassungen_p100k"]  = panel["N_elektro_overall"]       / panel["xbev"] * 100_000
+panel["bev_corporate_p100k"]       = panel["N_elektro_corporate"]     / panel["xbev"] * 100_000
+panel["bev_private_p100k"]         = panel["N_elektro_private"]       / panel["xbev"] * 100_000
+# ICE placebo from counts (plan v2): avoids share-inversion at near-zero shares.
+panel["ice_neuzulassungen_p100k"]  = panel["N_benzin_diesel_overall"] / panel["xbev"] * 100_000
 panel = panel.drop(columns=["B_elektro_overall"])
 
 _bev_holes = panel["bev_stock_p100k"].isna().sum()
@@ -210,20 +250,43 @@ panel["log_pop_dens"] = np.log(panel["xbev"] / panel["area_qkm"])
 # Log Steuerkraft: negatives (rare, fiscal equalization) clipped to 0 before log1p.
 panel["log_steuerkraft"] = np.log1p(panel["q_gest_bev"].clip(lower=0))
 
+# Log Kaufkraft (per-capita EUR; INKAR Kürzel q_kaufkraft). Plan v2: strictly
+# positive — verify min; fall back to log1p if any non-positive value appears.
+_kk = panel["q_kaufkraft"]
+_kk_min = _kk.min(skipna=True)
+print(f"q_kaufkraft min = {_kk_min}")
+if pd.notna(_kk_min) and _kk_min > 0:
+    panel["log_kaufkraft"] = np.log(_kk)
+else:
+    panel["log_kaufkraft"] = np.log1p(_kk.clip(lower=0))
+
 # ── EV ecosystem index: first PC of (bev_stock_p100k, ev_chargepoints_p100k) ─
+# Fit scaler+PCA on year ≥ 2017 only. Rationale: the BNetzA Ladesäulenregister
+# became reliably comprehensive after the 2017 Ladesäulenverordnung made
+# registration mandatory. ev_chargepoints is zero-filled where the registry has
+# no entry — credible after 2017 but plausibly under-coverage before, which
+# would distort the PCA scaling. Sign is flipped if needed so that both loadings
+# are positive ("more EV ecosystem"). Score is computed for all rows where the
+# inputs are present (including <2017 rows scored using the post-2017-fit PCA).
 
 eco_vars = ["bev_stock_p100k", "ev_chargepoints_p100k"]
-eco_mask = panel[eco_vars].notna().all(axis=1)
-eco_data = np.log1p(panel.loc[eco_mask, eco_vars].values)
+eco_present = panel[eco_vars].notna().all(axis=1)
+eco_fit_mask = eco_present & (panel["year"] >= 2017)
 
-scaler    = StandardScaler()
-pca       = PCA(n_components=1)
-eco_scores = pca.fit_transform(scaler.fit_transform(eco_data)).ravel()
+scaler = StandardScaler()
+pca    = PCA(n_components=1)
+scaler.fit(np.log1p(panel.loc[eco_fit_mask, eco_vars].values))
+pca.fit(scaler.transform(np.log1p(panel.loc[eco_fit_mask, eco_vars].values)))
 
+if (pca.components_[0] < 0).all():
+    pca.components_ = -pca.components_
+
+eco_scores = pca.transform(scaler.transform(np.log1p(panel.loc[eco_present, eco_vars].values))).ravel()
 panel["eco_index"] = np.nan
-panel.loc[eco_mask, "eco_index"] = eco_scores
+panel.loc[eco_present, "eco_index"] = eco_scores
 
-print(f"\nEco index — PCA explained variance ratio: {pca.explained_variance_ratio_[0]:.1%}")
+print(f"\nEco index — PCA fit on year>=2017 ({eco_fit_mask.sum()} rows)")
+print(f"  explained variance ratio: {pca.explained_variance_ratio_[0]:.1%}")
 print(f"  loadings (bev_stock_p100k, ev_chargepoints_p100k): "
       f"{pca.components_[0].round(4).tolist()}")
 
@@ -236,7 +299,7 @@ panel = panel.merge(elections, on=["AGS8", "year"], how="left")
 panel = panel.merge(personal, on=["AGS5", "year"], how="left")
 
 # Fill activity indicators with 0 for never-treated units
-for col in ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]:
+for col in ["emk_active", "n_emk_active", "emk_absorbing", "emk_absorbing_n"]:
     panel[col] = panel[col].fillna(0).astype(int)
 
 # ── Lag variables (within AGS8, year-based) ───────────────────────────────────
@@ -245,6 +308,7 @@ for col in ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_a
 LAG_VARS = [
     "q_gest_bev",      # steuerkraft (raw, kept for reference)
     "log_steuerkraft",
+    "log_kaufkraft",
     "eco_index",
     "bev_stock_p100k",
     "ev_chargepoints_p100k",
@@ -255,9 +319,10 @@ LAG_VARS = [
     "N_elektro_overall",
     "N_elektro_private",
     "N_elektro_corporate",
+    "N_benzin_diesel_overall",
     "N_ev_share_overall",
     "N_ev_share_private",
-    "N_ev_share_corporate"
+    "N_ev_share_corporate",
 ]
 
 panel = panel.sort_values(["AGS8", "year"]).reset_index(drop=True)
@@ -272,14 +337,17 @@ for k in [1, 2, 3]:
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
 derived_cols  = [
-    "area_qkm", "log_pop_dens", "log_steuerkraft",
+    "area_qkm", "log_pop_dens", "log_steuerkraft", "log_kaufkraft",
     "bev_stock_p100k", "bev_neuzulassungen_p100k",
     "bev_corporate_p100k", "bev_private_p100k",
+    "ice_neuzulassungen_p100k",
     "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
     "eco_index",
 ]
 id_cols       = ["AGS8", "AGS5", "AGS2", "year"]
-activity_cols = ["emk_active", "n_emk_active", "n_emk_total", "emk_absorbing", "emk_absorbing_n"]
+treat_cols    = ["first_treat_direct", "first_treat_broad", "treat_type",
+                 "kreis_funded_year", "modellregion_pre2015"]
+activity_cols = ["emk_active", "n_emk_active", "emk_absorbing", "emk_absorbing_n"]
 ladestation_cols = [
     "ev_stations", "ev_stations_p100k",
     "ev_chargepoints", "ev_chargepoints_p100k",
@@ -287,11 +355,11 @@ ladestation_cols = [
 election_cols = [c for c in elections.columns if c not in ["AGS8", "year"]]
 inkar_cols    = [c for c in inkar.columns if c not in ("AGS8", "AGS5", "year")]
 personal_cols = ["n_vze_personal"]
-emk_attr_cols = [c for c in emk_attrs.columns if c not in ["AGS5"] + activity_cols]
+imp_cols      = [c for c in panel.columns if c.endswith("_imp")]
 
 panel = panel[
-    id_cols + activity_cols + ladestation_cols + election_cols +
-    inkar_cols + derived_cols + personal_cols + emk_attr_cols + lag_cols_all
+    id_cols + treat_cols + activity_cols + ladestation_cols + election_cols +
+    inkar_cols + derived_cols + personal_cols + imp_cols + lag_cols_all
 ]
 
 panel.to_csv(f"{DATA_DIR_FINAL}/emk_inkar_panel_ags8.csv", index=False)
@@ -300,10 +368,11 @@ print(f"\nPanel shape:               {panel.shape}")
 print(f"AGS8 units:                {panel['AGS8'].nunique()}")
 print(f"AGS5 (Kreis) units:        {panel['AGS5'].nunique()}")
 print(f"Years:                     {sorted(panel['year'].unique().tolist())}")
-print(f"Ever-treated AGS8:         {(panel.groupby('AGS8')['emk_active'].max() == 1).sum()}")
+print(f"Ever-treated AGS8 (broad): {(panel.groupby('AGS8')['emk_active'].max() == 1).sum()}")
 print(f"  direct project match:    {emk_direct['AGS8'].nunique()}")
 print(f"  Kreis broadcast only:    {emk_kreis_exp[~emk_kreis_exp['AGS8'].isin(emk_direct['AGS8'])]['AGS8'].nunique()}")
 print(f"Never-treated AGS8:        {(panel.groupby('AGS8')['emk_active'].max() == 0).sum()}")
 print(f"Max concurrent projects:   {panel['n_emk_active'].max()}")
-print(f"\nNew derived columns: {derived_cols}")
+print(f"\nNew derived columns:       {derived_cols}")
+print(f"Imputation flags ({len(imp_cols)}): {imp_cols}")
 print(f"Lag columns ({len(lag_cols_all)}): {lag_cols_all[:6]} ...")

@@ -94,9 +94,27 @@ print(f"Kreisfreie Städte identified:  {kreisfrei['ags'].nunique()}")
 # Zero area is a data artifact; treat as missing
 area.loc[area["area_qkm"] == 0, "area_qkm"] = float("nan")
 
-# ── Fill within AGS8 across years ────────────────────────────────────────────
-# Area is time-invariant absent boundary reforms. Forward- then backward-fill
-# within each AGS8 handles both mid-series and leading/trailing gaps.
+# ── Reindex each AGS8 to full year range, then fill within AGS8 ──────────────
+# Successor codes only appear in the file from the year their boundary was
+# created onward. INKAR population is restated to 2023 boundaries, so the
+# consistent denominator for density is the 2023-boundary area held constant
+# backward. Reindex to the file's full year range per AGS8, then ffill+bfill.
+
+area = area.sort_values(["AGS8", "year"]).reset_index(drop=True)
+
+_all_years = sorted(area["year"].unique().tolist())
+_n_pre = len(area)
+area = (
+    area.set_index(["AGS8", "year"])
+    .reindex(
+        pd.MultiIndex.from_product([area["AGS8"].unique(), _all_years],
+                                   names=["AGS8", "year"])
+    )
+    .reset_index()
+)
+_n_added = len(area) - _n_pre
+print(f"Reindexed area: +{_n_added} (AGS8, year) cells "
+      f"({_n_added / len(area) * 100:.1f}% of post-reindex)")
 
 area = area.sort_values(["AGS8", "year"]).reset_index(drop=True)
 area["area_qkm"] = area.groupby("AGS8")["area_qkm"].transform(
