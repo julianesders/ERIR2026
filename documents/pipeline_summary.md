@@ -21,7 +21,7 @@ KBA delivery txt        ├──►  │   ──►  emk_inkar_panel_ags8.csv 
 ADAC scrape             │      │                                          │
 Genesis area 11111      │      │                                          │
 VG250 geometries        │      │                                          ▼
-INKAR personnel 74111   ┘      │                                  frame_{hazard,did_*}.rds
+INKAR personnel 74111   ┘      │                                  frame_{hazard,did_*}.csv
                                │                                          │
                                                                           ▼
                                                           01–06 (descriptives, hazard,
@@ -157,10 +157,12 @@ estimate table.
 
 | File | Risk-set / sample | Event variable | Notes |
 |---|---|---|---|
-| `frame_hazard.rds`     | `year ≥ 2015`, drop unit-years after `first_treat_direct` | `onset_direct` | Broadcast-only units stay in risk set with `kreis_funded` switching on |
-| `frame_hazard_cov.rds` | `year ≥ 2015`, drop unit-years after `first_treat_broad`  | `onset_broad`  | Appendix |
-| `frame_did_broad.rds`  | full panel | `gname_cs` (0 = never) / `gname_bjs` (0 = never) from `first_treat_broad` | Carries baseline snapshot + spatial cols |
-| `frame_did_direct.rds` | full panel, broadcast-only units DROPPED | g-names from `first_treat_direct` | Sharp identification |
+| `frame_hazard.csv`       | `year ≥ 2015`, drop unit-years after `first_treat_direct` | `onset_direct` | Broadcast-only units stay in risk set with `kreis_funded` switching on |
+| `frame_hazard_cov.csv`   | `year ≥ 2015`, drop unit-years after `first_treat_broad`  | `onset_broad`  | Appendix |
+| `frame_logit_full.csv`   | full panel (no risk-set censoring); post-onset rows have mechanical-zero `onset_direct` | `onset_direct` | For absorbing-treatment logit in `02b_logit_uncensored.R` |
+| `frame_logit_cov_full.csv` | full panel; post-onset rows have mechanical-zero `onset_broad` | `onset_broad` | Written by `00_prep_analysis.R` (currently unused) |
+| `frame_did_broad.csv`    | full panel | `gname_cs` (0 = never) / `gname_bjs` (0 = never) from `first_treat_broad` | Carries baseline snapshot + spatial cols |
+| `frame_did_direct.csv`   | full panel, broadcast-only units DROPPED | g-names from `first_treat_direct` | Sharp identification |
 
 `MAX_COHORT = NA` for first pass (no policy-regime cap).
 
@@ -168,31 +170,32 @@ estimate table.
 
 | Output | Content |
 |---|---|
-| `fig_concentration_coverage.pdf`     | Lorenz-style curve, AGS8 ranked by `kk_base`, cumulative population share vs cumulative share of treated population (broad + direct) + 45° line + concentration index |
-| `fig_concentration_coverage_sk.pdf`  | Same, ranked by `sk_base` (appendix) |
-| `tab_concentration_index.csv`        | The two indices (broad/direct × kk/sk) |
-| `tab_receipt_by_quintile.{tex,csv}`  | Receipt probability and pop. coverage by `kk_base_q5`, `sk_base_q5` × {broad, direct} |
+| `fig_concentration_coverage_sk.pdf`  | Lorenz-style curve, AGS8 ranked by `sk_base` (Steuerkraft) |
+| `fig_concentration_multi.pdf`        | Multi-ranking Lorenz curves (direct treatment, 6 ranking variables) |
+| `tab_concentration_index.csv`        | Concentration indices (sk broad/direct + multi-ranking direct) |
 | `tab_balance.{tex,csv}`              | Means by `treat_type` + normalized differences vs "never" |
+| `tab_desc_means.{tex,csv}`           | Direct vs Never: unit means + t-test p-values (2015–latest) |
+| `tab_desc_medians.{tex,csv}`         | Direct vs Never: unit medians + Mood's median test p-values |
 | `fig_map_treatment.pdf`              | VG250 choropleth of `treat_type` (optional; needs sf + gpkg) |
-| `tab_corr.csv`, `tab_vif.{tex,csv}`  | Pairwise correlations + VIFs on hazard-frame channels |
+| `tab_corr.csv`                       | Pairwise correlations on hazard-frame channels |
+| `tab_vif.{tex,csv}`                  | VIFs on hazard-frame channels |
+| `fig_map_bev_dual_2023.png`          | BEV stock p100k + BEV share of stock, 2023 (optional) |
 
 ### 4.3 `02_hazard.R` — Part (i): drivers of EMK onset
 
 Estimator: `fixest::feglm` with `family = binomial("cloglog")`, FE `| year + AGS2`,
-clustered SEs at AGS5. Logit twin for robustness. All channels lag-1 (z'd on
-estimation sample).
+SEs clustered at AGS2. Logit twin for robustness. All channels lag-1 (z'd on
+estimation sample). `log_dens_z` is a universal control in all columns.
 
 #### Columns
 
 | # | Spec | Sample |
 |---|---|---|
-| (1) | `~ log_dens_z + muni_gruene_z + bev_z + chg_z + sk_z + kk_z` | full |
+| (1) | `~ sk_z + bev_z + chg_z + state_gruene_z + log_dens_z` | full |
 | (2) | (1) + `pers_z` | no-Stadtstaaten (drop AGS2 ∈ {02,04,11}) |
-| (3) | (1) – `log_dens_z` (collinearity diagnostic) | full |
-| (4) | (1) + `kreis_funded` (crowd-out/stimulation) | full |
-| (5) | (1) replacing `bev_z + chg_z` with `eco_index_L1` | full |
-| (6) | (1) replacing `muni_gruene_z` with `state_gruene_z` | full |
-| (7) | (1) replacing `muni_gruene_z` with `fed_gruene_z` | full |
+| (3) | `sk_z + eco_z + pers_z + state_gruene_z + log_dens_z` | full |
+| (4) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
+| (5) | (1) replacing `state_gruene_z` with `kreis_funded` | full |
 
 #### Outputs
 
@@ -203,16 +206,16 @@ estimation sample).
 | `tab_hazard_ame.{tex,csv}`   | Point AMEs via `avg_slopes(vcov=FALSE)` (SEs only on the linear-index coefs) |
 | `tab_hazard_robust.csv`      | brglm2 penalized logit + LPM + cloglog complete-case |
 | `tab_hazard_diag.csv`        | Events per AGS2 / per year |
-| `tab_hazard_cov.{tex,csv}`   | Appendix: coverage-event variant on `frame_hazard_cov.rds` |
+| `tab_hazard_cov.{tex,csv}`   | Appendix: coverage-event variant on `frame_hazard_cov.csv` |
 | `fig_coef_stability.pdf`     | (1) vs (3) coefficient comparison |
 
 ### 4.4 `03_did_main.R` — Part (ii): adoption response
 
 Two co-primary staggered-DiD estimators run for every (outcome × design) cell:
 
-- **CS** (`did::att_gt` → `aggte`), `est_method = "dr"`, baseline covariates
-  in `xformla = ~ kk_base_z + sk_base_z + dens_base_z + green_base_z + bev_base_z + chg_base_z`,
-  `bstrap=TRUE, biters=1999, clustervars="AGS5", allow_unbalanced_panel=TRUE`.
+- **CS** (`did::att_gt` → `aggte`), `est_method = "dr"`, `xformla = NULL`
+  (unconditional parallel trends for the headline; conditional variant is in `04`),
+  `bstrap=TRUE, biters=2000, clustervars="AGS5", allow_unbalanced_panel=TRUE`.
 - **BJS** (`didimputation::did_imputation`), defaults; `cluster_var="AGS5"`.
 
 #### Design grid
@@ -245,23 +248,19 @@ Loop over variants × outcomes × estimators.
 
 #### Variants
 
-| Name | Filter | Anticipation |
-|---|---|---|
-| `baseline`        | none                                                      | 0 |
-| `anticipation_1`  | none                                                      | 1 |
-| `drop_2016`       | drop cohort 2016 (1 pre-period)                           | 0 |
-| `drop_covid`      | drop `year ∈ {2020, 2021}`                                | 0 |
-| `complete_case`   | drop rows where `B_elektro_overall_imp == TRUE`           | 0 |
+| Name | Filter | Anticipation | xformla | Control |
+|---|---|---|---|---|
+| `baseline`           | none                                            | 0 | NULL         | nevertreated |
+| `conditional`        | none                                            | 0 | `XFORMLA_CS` | nevertreated |
+| `anticipation_1`     | none                                            | 1 | NULL         | nevertreated |
+| `drop_2016`          | drop cohort 2016 (1 pre-period)                 | 0 | NULL         | nevertreated |
+| `drop_covid`         | drop `year ∈ {2020, 2021}` (short-run only)     | 0 | NULL         | nevertreated |
+| `complete_case`      | drop rows where `N_elektro_overall_imp == TRUE` | 0 | NULL         | nevertreated |
+| `notyet_evertreated` | ever-treated only                               | 0 | NULL         | notyettreated |
 
 #### Estimators
 
-| Tag | Engine | Notes |
-|---|---|---|
-| Sun-Abraham | `fixest::sunab` | Never-treated coded to 10000 |
-| BJS         | `didimputation` | Static effect (`horizon=NULL`) |
-| CS          | `did::att_gt`   | `est_method="dr"`, `xformla=NULL` |
-| PPML        | `fixest::fepois`| On counts `N_elektro_*`, `offset(log(xbev))` |
-| TWFE wildboot | `fwildclusterboot::boottest` | Sanity, one outcome only |
+Each variant runs BJS (static, `horizon=NULL`) and CS (simple ATT, `biters=999`).
 
 Outputs: `est_att_robust.csv`, `fig_robust_grid.pdf` (forest of ATTs).
 

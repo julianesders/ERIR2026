@@ -1,14 +1,17 @@
 # ───────────────────────────────────────────────────────────────────────────────
 # 00_prep_analysis.R
 #
-# Build estimation frames (.rds) consumed by every downstream analysis script.
+# Build estimation frames (.csv) consumed by every downstream analysis script.
 #
 # Outputs (01_data/03_final/):
-#   frame_hazard.rds       — risk set on DIRECT onsets; broad units stay in risk
-#                            set with kreis_funded switching on (year >= 2015).
-#   frame_hazard_cov.rds   — risk set on BROAD (coverage) onsets (appendix).
-#   frame_did_broad.rds    — full panel for staggered DiD on broad treatment.
-#   frame_did_direct.rds   — broadcast-only units dropped entirely.
+#   frame_hazard.csv         — risk set on DIRECT onsets; broad units stay in
+#                              risk set with kreis_funded switching on (year >= 2015).
+#   frame_hazard_cov.csv     — risk set on BROAD (coverage) onsets (appendix).
+#   frame_logit_full.csv     — full panel (no censoring), DIRECT onset flag;
+#                              counterfactual to frame_hazard for plain logit.
+#   frame_logit_cov_full.csv — full panel, BROAD onset flag.
+#   frame_did_broad.csv      — full panel for staggered DiD on broad treatment.
+#   frame_did_direct.csv     — broadcast-only units dropped entirely.
 #
 # Also writes a baseline-snapshot table (earliest available 2014–2016 value per
 # AGS8 per covariate) used as a time-invariant covariate set for CS-dr and for
@@ -48,6 +51,7 @@ source(file.path(code_dir, "03_analysis", "_dict.R"))
 MAX_COHORT  <- NA_integer_
 BASE_WINDOW <- 2014:2016
 START_YEAR  <- 2015L
+MIN_YEAR    <- 2010L     # drop pre-MIN_YEAR rows; trim panel before save
 
 # -- Load panel + neighbors ----------------------------------------------------
 
@@ -69,22 +73,58 @@ panel[, AGS2 := sprintf("%02d", as.integer(AGS2))]
 # Stadtstaaten flag (kept as column, not a separate frame)
 panel[, ns_flag := !(AGS2 %in% STADTSTAATEN)]
 
+# Year filter: trim pre-MIN_YEAR rows. Baseline snapshot (BASE_WINDOW = 2014–
+# 2016) and hazard z-scoring (year >= START_YEAR = 2015) are both unaffected.
+# The DiD frames otherwise hold many years of NA-outcome rows that downstream
+# scripts would drop per call; this filter just does it once at the source.
+.n_pre <- nrow(panel)
+panel <- panel[year >= MIN_YEAR]
+cat(sprintf("MIN_YEAR=%d filter: -%d rows; panel years now %d-%d\n",
+            MIN_YEAR, .n_pre - nrow(panel),
+            min(panel$year), max(panel$year)))
+
+# Early-treatment hygiene: EMK projects can begin before MIN_YEAR (e.g. some
+# 2008-09 projects). Those units would otherwise appear "always-treated" in
+# the post-MIN_YEAR frame, which CS/BJS handle poorly. NA-out their treatment
+# year so they are reclassified as untreated controls. Print counts so it's
+# transparent how many units are affected.
+.early_direct <- panel[first_treat_direct < MIN_YEAR, uniqueN(AGS8)]
+.early_broad  <- panel[first_treat_broad  < MIN_YEAR, uniqueN(AGS8)]
+if (.early_direct > 0L || .early_broad > 0L) {
+  cat(sprintf("Pre-MIN_YEAR treatment: %d AGS8 with first_treat_direct < %d, ",
+              .early_direct, MIN_YEAR))
+  cat(sprintf("%d with first_treat_broad < %d. Reclassified as untreated.\n",
+              .early_broad, MIN_YEAR))
+  panel[first_treat_direct < MIN_YEAR, first_treat_direct := NA_integer_]
+  panel[first_treat_broad  < MIN_YEAR, first_treat_broad  := NA_integer_]
+  panel[is.na(first_treat_direct) & is.na(first_treat_broad),
+        treat_type := "never"]
+}
+
 # Data-quality filter: drop very small Gemeinden. KBA registers vehicles at
 # the holder's HQ AGS8; leasing companies / Großkunden-Halter incorporated in
 # tiny Gemeinden create extreme per-100k spikes (e.g. AGS8 01054108, pop 304,
-# 143 BEVs in 2022 -> 47,000 per 100k). Threshold of 500 catches the worst of
-# these and loses essentially no treated AGS8.
+# 143 BEVs in 2022 -> 47,000 per 100k). UNIT-LEVEL filter: drop AGS8 whose
+# minimum population in the panel is below threshold, so the panel doesn't
+# acquire churning unit-years (which would silently censor the hazard and
+# change which (g,t) cells exist in CS).
 POP_MIN <- 500L
 .n_pre <- nrow(panel)
-.dropped_units <- panel[xbev < POP_MIN, uniqueN(AGS8)]
-.dropped_treat <- panel[xbev < POP_MIN & !is.na(first_treat_broad), uniqueN(AGS8)]
-panel <- panel[xbev >= POP_MIN]
-cat(sprintf("POP_MIN=%d filter: -%d rows (%d AGS8 dropped, %d of which broad-treated)\n",
-            POP_MIN, .n_pre - nrow(panel), .dropped_units, .dropped_treat))
+.small_units <- panel[, .(min_pop = min(xbev, na.rm = TRUE)), by = AGS8][
+  min_pop < POP_MIN, AGS8]
+.dropped_treat_broad  <- uniqueN(
+  panel[AGS8 %in% .small_units & !is.na(first_treat_broad),  AGS8])
+.dropped_treat_direct <- uniqueN(
+  panel[AGS8 %in% .small_units & !is.na(first_treat_direct), AGS8])
+panel <- panel[!(AGS8 %in% .small_units)]
+cat(sprintf(
+  "POP_MIN=%d unit-level filter: -%d rows (%d AGS8 dropped; %d broad-treated, %d direct-treated)\n",
+  POP_MIN, .n_pre - nrow(panel), length(.small_units),
+  .dropped_treat_broad, .dropped_treat_direct))
 
-# Winsorize per-100k outcomes at the 99.9% percentile to cap remaining
+# Winsorize per-100k outcomes at the 99th percentile to cap remaining
 # fleet-registration artifacts at larger Gemeinden.
-WINSOR_Q <- 0.999
+WINSOR_Q <- 0.99
 .winsor_cols <- c("bev_neuzulassungen_p100k", "bev_corporate_p100k",
                   "bev_private_p100k", "bev_stock_p100k",
                   "ice_neuzulassungen_p100k")
@@ -94,6 +134,14 @@ for (.c in .winsor_cols) {
   panel[get(.c) > .cap, (.c) := .cap]
   cat(sprintf("Winsorized %-26s at %.1f (q=%.3f, %d cells capped)\n",
               .c, .cap, WINSOR_Q, .n_capped))
+}
+
+# log1p twins of the per-100k outcomes for proportional-effect specifications.
+# log1p handles the floor of zeros (many small Gemeinden have 0 new BEVs in
+# early years); the level reads as "additional registrations per 100k", the
+# log1p reads as approximate percent change in the rate.
+for (.c in .winsor_cols) {
+  panel[, (paste0("log1p_", .c)) := log1p(pmax(get(.c), 0))]
 }
 
 # Optional cohort cap: censor units whose first-treat exceeds MAX_COHORT.
@@ -170,6 +218,44 @@ for (nm in c("kk_base", "sk_base", "dens_base", "bev_base", "chg_base", "green_b
 }
 
 cat(sprintf("Baseline snapshot: %d AGS8 with at least one base var\n", nrow(base_dt)))
+
+# B5: NA diagnostics on the baseline z-covariates used by CS-dr. If any of
+# these are systematically missing in a Bundesland-shaped pattern, the CS
+# sample silently loses the units and the headline ATT is on a non-random
+# subset. Print counts; if green_base is the binding loser, swap in a fallback
+# from state_gruene baseline.
+cat("\nBaseline covariate NA counts (relevant to CS sample):\n")
+.diag_cols <- c("kk_base_z", "sk_base_z", "dens_base_z", "green_base_z",
+                "bev_base_z", "chg_base_z")
+for (.c in .diag_cols) {
+  cat(sprintf("  %-14s NA=%d (%.1f%% of AGS8)\n",
+              .c, sum(is.na(base_dt[[.c]])),
+              100 * mean(is.na(base_dt[[.c]]))))
+}
+.cov_keep <- complete.cases(base_dt[, c("kk_base_z", "sk_base_z",
+                                         "dens_base_z", "green_base_z"),
+                                     with = FALSE])
+cat(sprintf("CS xformla complete cases (kk+sk+dens+green): %d / %d AGS8\n",
+            sum(.cov_keep), nrow(base_dt)))
+
+# green_base fallback: per AGS8, where muni_gruene is missing for all base
+# years but state_gruene is present, use the state-level baseline as a fallback.
+# Document the swap so it's traceable.
+if (any(is.na(base_dt$green_base))) {
+  state_snap <- panel[year %in% BASE_WINDOW & !is.na(state_gruene),
+                      .(state_gruene_base = state_gruene[1L]),
+                      by = AGS8]
+  base_dt <- merge(base_dt, state_snap, by = "AGS8", all.x = TRUE)
+  .n_swap <- base_dt[is.na(green_base) & !is.na(state_gruene_base), .N]
+  base_dt[is.na(green_base) & !is.na(state_gruene_base),
+          green_base := state_gruene_base]
+  base_dt[, green_base_z := z(green_base)]
+  base_dt[, state_gruene_base := NULL]
+  cat(sprintf("green_base: filled %d AGS8 from state_gruene baseline; ",
+              .n_swap))
+  cat(sprintf("remaining NA = %d\n", sum(is.na(base_dt$green_base))))
+}
+
 fwrite(base_dt, file.path(out_dir, "baseline_snapshot.csv"))
 
 # Merge baseline into panel (constant within AGS8)
@@ -191,7 +277,7 @@ cat(sprintf(
   nrow(ph), uniqueN(ph$AGS8), ph[, sum(onset_direct)],
   100 * ph[, mean(onset_direct)]
 ))
-saveRDS(ph, file.path(data_final, "frame_hazard.rds"))
+fwrite(ph, file.path(data_final, "frame_hazard.csv"))
 
 # Coverage-event hazard frame (appendix; "determinants of coverage")
 ph_cov <- panel[year >= START_YEAR]
@@ -203,7 +289,33 @@ cat(sprintf(
   nrow(ph_cov), uniqueN(ph_cov$AGS8), ph_cov[, sum(onset_broad)],
   100 * ph_cov[, mean(onset_broad)]
 ))
-saveRDS(ph_cov, file.path(data_final, "frame_hazard_cov.rds"))
+fwrite(ph_cov, file.path(data_final, "frame_hazard_cov.csv"))
+
+# -- Logit-counterfactual frames (full panel, no risk-set censoring) ----------
+# Same year >= START_YEAR floor and all other filters; post-onset AGS8-years
+# are retained. Onset stays a year-of-event indicator (mechanically zero for
+# post-onset years). Consumed by 02b_logit_uncensored.R as a plain-logit
+# counterfactual to the discrete-time hazard.
+
+logit_full <- panel[year >= START_YEAR]
+logit_full[, onset_direct := as.integer(!is.na(first_treat_direct) & year == first_treat_direct)]
+logit_full[, kreis_funded := as.integer(!is.na(kreis_funded_year) & kreis_funded_year < year)]
+cat(sprintf(
+  "frame_logit_full: %d obs | %d AGS8 | %d direct onsets | rate %.2f%%\n",
+  nrow(logit_full), uniqueN(logit_full$AGS8), logit_full[, sum(onset_direct)],
+  100 * logit_full[, mean(onset_direct)]
+))
+fwrite(logit_full, file.path(data_final, "frame_logit_full.csv"))
+
+logit_cov_full <- panel[year >= START_YEAR]
+logit_cov_full[, onset_broad  := as.integer(!is.na(first_treat_broad)  & year == first_treat_broad)]
+logit_cov_full[, kreis_funded := as.integer(!is.na(kreis_funded_year) & kreis_funded_year < year)]
+cat(sprintf(
+  "frame_logit_cov_full: %d obs | %d AGS8 | %d coverage onsets | rate %.2f%%\n",
+  nrow(logit_cov_full), uniqueN(logit_cov_full$AGS8), logit_cov_full[, sum(onset_broad)],
+  100 * logit_cov_full[, mean(onset_broad)]
+))
+fwrite(logit_cov_full, file.path(data_final, "frame_logit_cov_full.csv"))
 
 # -- DiD frames ----------------------------------------------------------------
 # `did` package: gname = 0 for never-treated
@@ -215,17 +327,19 @@ panel[, ags8_id := .GRP, by = AGS8]
 frame_did_broad <- copy(panel)
 frame_did_broad[, gname_cs  := fifelse(is.na(first_treat_broad), 0L,
                                        as.integer(first_treat_broad))]
-# didimputation v0.5.1: never-treated coded as 0 (or NA), NOT Inf.
-frame_did_broad[, gname_bjs := fifelse(is.na(first_treat_broad), 0L,
-                                       as.integer(first_treat_broad))]
-saveRDS(frame_did_broad, file.path(data_final, "frame_did_broad.rds"))
+# BJS never-treated coding lives in `BJS_NEVER` (_dict.R) so 03/04/06 cannot
+# drift apart. The A1 guard at the top of 03_did_main.R verifies that the
+# untreated estimation sample is non-degenerate; if it is, flip `BJS_NEVER`.
+frame_did_broad[, gname_bjs := fifelse(is.na(first_treat_broad), BJS_NEVER,
+                                       as.numeric(first_treat_broad))]
+fwrite(frame_did_broad, file.path(data_final, "frame_did_broad.csv"))
 
 frame_did_direct <- panel[treat_type != "broadcast_only"]
 frame_did_direct[, gname_cs  := fifelse(is.na(first_treat_direct), 0L,
                                         as.integer(first_treat_direct))]
-frame_did_direct[, gname_bjs := fifelse(is.na(first_treat_direct), 0L,
-                                        as.integer(first_treat_direct))]
-saveRDS(frame_did_direct, file.path(data_final, "frame_did_direct.rds"))
+frame_did_direct[, gname_bjs := fifelse(is.na(first_treat_direct), BJS_NEVER,
+                                        as.numeric(first_treat_direct))]
+fwrite(frame_did_direct, file.path(data_final, "frame_did_direct.csv"))
 
 cat(sprintf(
   "frame_did_broad : %d obs | %d AGS8 | %d ever-treated\n",
@@ -310,4 +424,4 @@ for (nm in names(year_log)) {
 }
 close(con)
 cat(sprintf("\nLogs / cohort table -> %s\n", out_dir))
-cat(sprintf("Frames saved        -> %s/frame_*.rds\n", data_final))
+cat(sprintf("Frames saved        -> %s/frame_*.csv\n", data_final))

@@ -2,8 +2,9 @@
 # 06_spillovers.R   — Spatial spillovers (donut + descriptive event study)
 #
 #   - Donut robustness: rerun the main DiD spec (broad / never / CS-dr) but
-#     DROP never-treated units that have any first-order treated neighbour
-#     (emk_absorbing_any_nbrs_1 == 1).  Adds a row to est_att_robust.csv.
+#     DROP never-treated units flagged by either direct_treated_any_nbrs_gem_1
+#     or broad_treated_any_nbrs_kreis (more conservative donut).
+#     Writes est_att_donut.csv; 07_assemble.R picks it up by pattern.
 #   - Descriptive spillover event study: among never-treated units, set
 #     pseudo-treatment to the first year that emk_absorbing_any_nbrs_1 == 1;
 #     estimate a BJS event study.
@@ -41,23 +42,21 @@ source(file.path(code_dir, "03_analysis", "_dict.R"))
 OUTCOME    <- "bev_neuzulassungen_p100k"
 CS_BITERS  <- 1999L
 
-xformla_cov <- ~ kk_base_z + sk_base_z + dens_base_z + green_base_z +
-                  bev_base_z + chg_base_z
+# Match the headline 03 spec: unconditional CS (xformla = NULL).
+xformla_cov <- NULL
 
-frame_broad <- readRDS(file.path(data_final, "frame_did_broad.rds"))
+.read_frame <- function(p) fread(p,
+  colClasses = list(character = c("AGS8", "AGS5", "AGS2", "treat_type")))
+frame_broad <- .read_frame(file.path(data_final, "frame_did_broad.csv"))
 
 # -- 1. Donut robustness ------------------------------------------------------
-# Drop never-treated controls that are spatially contaminated. The new spatial
-# script writes two indicators (see 01_spatial_weights_ags8.py):
-#   direct_treated_any_nbrs_gem_1 : a 1st-order Gemeinde neighbour was *directly*
-#                                   treated (own AGS8 has an EMK project).
-#   broad_treated_any_nbrs_kreis  : a neighbouring Kreis had any broad coverage.
-# We drop controls flagged by EITHER (more conservative donut).
+# Drop never-treated controls with any 1st-order neighbour that was treated
+# (broad). Uses `emk_absorbing_any_nbrs_1` from spatial_neighbors_ags8.csv —
+# the granular Gemeinde / Kreis split indicators in the python script revision
+# are not yet in the merged frame.
 
 contaminated <- frame_broad[
-  is.na(first_treat_broad) &
-    (direct_treated_any_nbrs_gem_1 == 1L |
-     broad_treated_any_nbrs_kreis == 1L),
+  is.na(first_treat_broad) & emk_absorbing_any_nbrs_1 == 1L,
   unique(AGS8)
 ]
 cat(sprintf("Donut: dropping %d never-treated units with treated neighbours\n",
@@ -97,13 +96,12 @@ donut_dt <- rbindlist(donut_rows, fill = TRUE)
 fwrite(donut_dt, file.path(out_dir, "est_att_donut.csv"))
 
 # -- 2. Descriptive spillover event study -------------------------------------
-# Among never-treated units, pseudo-treatment = first year that a directly-
-# treated Gemeinde neighbour appears (granular indicator from the new spatial
-# script). BJS event study on the outcome.
+# Among never-treated units, pseudo-treatment = first year a 1st-order
+# neighbour appears as broad-treated. BJS event study on the outcome.
 
 never <- frame_broad[is.na(first_treat_broad)]
 first_nbr <- never[
-  direct_treated_any_nbrs_gem_1 == 1L,
+  emk_absorbing_any_nbrs_1 == 1L,
   .(pseudo_treat = min(year)), by = AGS8
 ]
 sp <- merge(never, first_nbr, by = "AGS8", all.x = TRUE)

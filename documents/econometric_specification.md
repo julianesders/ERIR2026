@@ -67,7 +67,7 @@ tercile) is the inequality payoff.
 
 ## 2. Part (i) — Discrete-time hazard of EMK onset
 
-### 2.1 Risk set and sample (`frame_hazard.rds`)
+### 2.1 Risk set and sample (`frame_hazard.csv`)
 
 Indexed unit-years $(i, t)$ surviving to the start of year $t$.
 
@@ -84,7 +84,7 @@ Notes:
 - Realised sample (current data): $N \approx 85{,}302$ unit-years from
   $\approx 9{,}607$ AGS8, with $\approx 166$ direct onsets (rate $\approx 0.19\%$).
 
-A second frame `frame_hazard_cov.rds` replaces $g_i^{\text{dir}}$ with
+A second frame `frame_hazard_cov.csv` replaces $g_i^{\text{dir}}$ with
 $g_i^{\text{broad}}$; used in an appendix table on "determinants of any
 coverage."
 
@@ -114,34 +114,33 @@ demographics).
 | Symbol | Channel | Construction |
 |---|---|---|
 | `log_dens_z`     | (contemporaneous) log pop. density | $z\{\log(\text{xbev}_{it} / \text{area}_i)\}$ |
-| `muni_gruene_z`  | Muni Grüne vote share (L1, LOCF) | $z\{\text{muni\_gruene}_{i,t-1}\}$ |
+| `sk_z`           | Steuerkraft per capita (L1) | $z\{\log1p(\text{q\_gest\_bev}_{i,t-1})\}$ |
 | `bev_z`          | BEV stock per 100k (L1) | $z\{\log1p(\text{bev\_stock\_p100k}_{i,t-1})\}$ |
 | `chg_z`          | Charging points per 100k (L1) | $z\{\log1p(\text{ev\_chargepoints\_p100k}_{i,t-1})\}$ |
-| `sk_z`           | Steuerkraft per 100k (L1) | $z\{\log1p(\text{q\_gest\_bev}_{i,t-1})\}$ |
-| `kk_z`           | Kaufkraft per 100k (L1) | $z\{\log(\text{q\_kaufkraft}_{i,t-1})\}$ |
+| `state_gruene_z` | State Grüne vote share (L1, LOCF) | $z\{\text{state\_gruene}_{i,t-1}\}$ |
+| `fed_gruene_z`   | Federal Grüne vote share (L1, LOCF) | $z\{\text{fed\_gruene}_{i,t-1}\}$ |
 | `pers_z`         | Personnel VZE per 100k (L1) | $z\{\log1p(\text{n\_vze\_personal}_{i,t-1})\}$ |
-| `eco_index_L1`   | PCA composite (L1) | First PC of $(\log1p \text{bev}, \log1p\text{chg})$, fit on year $\ge 2017$ (BNetzA registry pre-2017 under-coverage; `ev_chargepoints` is zero-filled where the registry has no entry), sign-flipped to positive |
-| `kreis\_funded`  | Strict-past Kreis funding dummy | $\mathbf{1}\{\text{kreis\_funded\_year}_i < t\}$ |
+| `eco_z`          | PCA composite (L1) | First PC of $(\log1p \text{bev}, \log1p\text{chg})$, fit on year $\ge 2017$ (BNetzA registry pre-2017 under-coverage), sign-flipped to positive |
+| `kreis_funded`   | Strict-past Kreis funding dummy | $\mathbf{1}\{\text{kreis\_funded\_year}_i < t\}$ |
 
 ### 2.3 Specification grid
 
+`log_dens_z` is a universal control present in all columns.
+
 | Col | Equation | Sample |
 |---|---|---|
-| (1) | $X = \{\text{log\_dens\_z, muni\_gruene\_z, bev\_z, chg\_z, sk\_z, kk\_z}\}$ | full |
+| (1) | $X = \{\text{sk\_z, bev\_z, chg\_z, state\_gruene\_z, log\_dens\_z}\}$ | full |
 | (2) | (1) $+$ `pers_z` | drop Stadtstaaten (AGS2 $\in \{02,04,11\}$) |
-| (3) | (1) without `log_dens_z` (collinearity diagnostic) | full |
-| (4) | (1) $+$ `kreis_funded` (crowd-out / stimulation) | full |
-| (5) | (1) swapping `bev_z + chg_z` for `eco_index_L1` (composite) | full |
-| (6) | (1) replacing `muni_gruene_z` with `state_gruene_z` | full |
-| (7) | (1) replacing `muni_gruene_z` with `fed_gruene_z` | full |
+| (3) | `sk_z + eco_z + pers_z + state_gruene_z + log_dens_z` | full |
+| (4) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
+| (5) | (1) replacing `state_gruene_z` with `kreis_funded` | full |
 
 ### 2.4 Inference
 
-Robust score-type standard errors clustered at AGS5
-(`cluster = ~AGS5` in `fixest::feglm`). Clustering above the unit reflects
-the dependence structure induced by the Kreis-broadcast mechanism (any
-single Kreis project produces correlated treatment assignment for all its
-Gemeinden) and shared local shocks (joint commuter / fiscal area).
+Robust score-type standard errors clustered at AGS2 (Bundesland)
+(`cluster = ~AGS2` in `fixest::feglm`). Treatment at AGS8 level with AGS2
+FE means no collinearity issue. Bundesland-level clustering absorbs the
+Förderkultur and correlated application behaviour within states.
 
 ### 2.5 Average marginal effects (AMEs)
 
@@ -166,7 +165,7 @@ the point AME and rely on the clustered coefficient SEs in
 | Logit twin                 | `feglm(..., family=logit)`            | Link sensitivity |
 | Penalised logit            | `brglm2::brglm_fit` with explicit year+AGS2 dummies | Rare-event bias (Firth-type penalty) |
 | LPM                        | `feols(...)`                          | Linearity / specification stability |
-| Complete-case              | rows with `B_elektro_overall_imp == FALSE` | Sensitivity to KBA interpolation |
+| Complete-case              | rows with `N_elektro_overall_imp == FALSE` | Sensitivity to KBA interpolation |
 | AGS5-level appendix hazard | manual, on $\approx 50$ Kreis events | Different unit of treatment |
 
 ### 2.7 Identification assumptions (Part i)
@@ -210,7 +209,7 @@ frames are saved:**
    BEVs registered in 2022 → 47,000 per 100k). Threshold of 500 inhabitants
    catches the worst artifacts and loses essentially no treated AGS8 (large
    Gemeinden are over-represented among EMK recipients anyway).
-2. **Winsorize the per-100k outcomes at the 99.9th percentile.** Caps
+2. **Winsorize the per-100k outcomes at the 99th percentile** (`WINSOR_Q = 0.99`). Caps
    remaining fleet-registration artifacts at larger Gemeinden while
    preserving substantively important variation in the body of the
    distribution. Applied to all `bev_*_p100k` and `ice_neuzulassungen_p100k`.
@@ -291,10 +290,11 @@ with the variable observed:
 | `sk_base_z`    | `log_steuerkraft` at $\bar t_i$       | $z$ |
 | `dens_base_z`  | `log_pop_dens` at $\bar t_i$          | $z$ |
 | `green_base_z` | `muni_gruene` at $\bar t_i$           | $z$ |
-| `bev_base_z`   | $\log1p(\text{bev\_stock\_p100k})$ at $\bar t_i$ | $z$ |
-| `chg_base_z`   | $\log1p(\text{ev\_chargepoints\_p100k})$ at $\bar t_i$ | $z$ |
+CS-dr formula: `xformla = ~ kk_base_z + sk_base_z + dens_base_z + green_base_z`.
 
-CS-dr formula: `xformla = ~ kk_base_z + sk_base_z + dens_base_z + green_base_z + bev_base_z + chg_base_z`.
+Note: `bev_base_z` and `chg_base_z` are excluded — baseline 2014–2016
+BEV/charging counts are mass-zero across the AGS8 cross-section and collapse
+the DR design matrix to singular inside small $(g, t)$ cells.
 
 These are **time-invariant** by construction. Rationale (in three words):
 no-bad-controls; CS-has-no-unit-FE; absorbed-by-BJS-anyway. See the
@@ -343,7 +343,7 @@ frame).
 
 | Estimator | Variance | Cluster |
 |---|---|---|
-| CS-dr | Multiplier bootstrap, $B = 1999$, simultaneous bands via `cband = TRUE` | `clustervars = "AGS5"` |
+| CS-dr | Multiplier bootstrap, $B = 2000$, simultaneous bands via `cband = TRUE` | `clustervars = "AGS5"` |
 | BJS   | Analytic, cluster-robust at the same level                                | `cluster_var = "AGS5"` |
 
 AGS5 clustering matches the Kreis-broadcast structure: any single AGS5
@@ -384,24 +384,17 @@ the untreated branch).
 
 ### 3.10 Variant analyses (`04_did_robustness.R`)
 
-| Variant | Sample modification | Anticipation |
-|---|---|---|
-| `baseline`        | none                                                | 0 |
-| `anticipation_1`  | none                                                | 1 |
-| `drop_2016`       | drop cohort 2016 (only one pre-period)              | 0 |
-| `drop_covid`      | drop $t \in \{2020, 2021\}$                         | 0 |
-| `complete_case`   | drop rows where `B_elektro_overall_imp == TRUE`     | 0 |
+| Variant | Sample modification | Anticipation | xformla | Control |
+|---|---|---|---|---|
+| `baseline`           | none                                              | 0 | NULL          | nevertreated |
+| `conditional`        | none                                              | 0 | `XFORMLA_CS`  | nevertreated |
+| `anticipation_1`     | none                                              | 1 | NULL          | nevertreated |
+| `drop_2016`          | drop cohort 2016 (only one pre-period)            | 0 | NULL          | nevertreated |
+| `drop_covid`         | drop $t \in \{2020, 2021\}$ (short-run only)      | 0 | NULL          | nevertreated |
+| `complete_case`      | drop rows where `N_elektro_overall_imp == TRUE`   | 0 | NULL          | nevertreated |
+| `notyet_evertreated` | ever-treated only                                 | 0 | NULL          | notyettreated |
 
-Estimators per variant: Sun-Abraham (`fixest::sunab`), BJS, CS, plus
-PPML/`fepois` on counts $N_{it}^{\text{BEV}}$ with $\text{offset}(\log(\text{xbev}_{it}))$
-for a proportional-effect reading:
-
-$$
-\mathbb{E}[N_{it}^{\text{BEV}} \mid \cdot] = \exp\bigl(\alpha_i + \lambda_t + \sum_{e}\gamma_e \mathbf{1}\{t - g_i = e\} + \log(\text{xbev}_{it})\bigr).
-$$
-
-A TWFE wild-cluster bootstrap (`fwildclusterboot::boottest`) is run as a
-small-cluster sanity for the headline outcome.
+Estimators per variant: BJS (static, `horizon = NULL`) and CS (simple ATT aggregation).
 
 ---
 

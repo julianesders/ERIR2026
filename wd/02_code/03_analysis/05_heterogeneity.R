@@ -38,11 +38,14 @@ source(file.path(code_dir, "03_analysis", "_dict.R"))
 CS_BITERS <- 1999L
 OUTCOME   <- "bev_neuzulassungen_p100k"
 
-frame_broad  <- readRDS(file.path(data_final, "frame_did_broad.rds"))
-frame_direct <- readRDS(file.path(data_final, "frame_did_direct.rds"))
+.read_frame <- function(p) fread(p,
+  colClasses = list(character = c("AGS8", "AGS5", "AGS2", "treat_type")))
+frame_broad  <- .read_frame(file.path(data_final, "frame_did_broad.csv"))
+frame_direct <- .read_frame(file.path(data_final, "frame_did_direct.csv"))
 
-xformla_cov <- ~ kk_base_z + sk_base_z + dens_base_z + green_base_z +
-                  bev_base_z + chg_base_z
+# Headline 03 spec is unconditional CS (xformla = NULL); the heterogeneity
+# stratification keeps the same identifying assumption per tercile.
+xformla_cov <- NULL
 
 # -- Tercile-stratified CS ----------------------------------------------------
 # Treated AND control units split by the same baseline-tercile.

@@ -1,41 +1,43 @@
-# ───────────────────────────────────────────────────────────────────────────────
-# 02_hazard.R   — Part (i): drivers of EMK direct-treatment onset
+# ─────────────────────────────────────────────────────────────────────────────
+# 02_hazard.R   — Part (i): drivers of EMK onset
 #
-# Replaces the old 02_panel_logit.R. Discrete-time hazard on the AGS8 risk set
-# (year >= 2015), with cloglog primary + logit twin. AMEs via marginaleffects.
+# Discrete-time hazard on the AGS8 risk set (year >= 2015).
+# All specs: year + AGS2 FE, SEs clustered on AGS2.
+# Primary event: onset_direct (frame_hazard.csv).
 #
-# Columns:
-#   (1) base channels                                       (full sample)
-#   (2) + personnel  (n_vze_personal_L1)                    (no Stadtstaaten)
-#   (3) drop log_dens_z  (collinearity diagnostic)          (full sample)
-#   (4) + kreis_funded  (crowd-out / stimulation)           (full sample)
-#   (5) eco_index variant (swap bev_z+chg_z for eco_index)  (full sample)
-#   (6) state Grüne     (channel swap)                      (full sample)
-#   (7) fed Grüne       (channel swap)                      (full sample)
+# 5-column specification grid (log_dens_z universal, listed last):
+#   (1) sk + bev + chg + state_gruene + log_dens    ← baseline
+#   (2) (1) + pers                                  ← no-Stadtstaaten
+#   (3) sk + eco + pers + state_gruene + log_dens
+#   (4) sk + bev + chg + fed_gruene + log_dens
+#   (5) sk + bev + chg + kreis_funded + log_dens
 #
-# Outputs (04_results/02_hazard/):
-#   tab_hazard_coef.{tex,csv}    headline coefficient table (cloglog)
-#   tab_hazard_logit.{tex,csv}   logit robustness twin
-#   tab_hazard_ame.{tex,csv}     average marginal effects
-#   tab_hazard_robust.csv        brglm2 / LPM / complete-case rows
-#   tab_hazard_diag.csv          events per AGS2, per year
-#   tab_hazard_cov.{tex,csv}     coverage-event variant (appendix)
-#   fig_coef_stability.pdf       coefficient stability across (1)/(3)
-# ───────────────────────────────────────────────────────────────────────────────
+# Tables produced in 04_results/02_hazard/:
+#   tab_hazard_main.{tex,csv}              Table 1: cloglog, direct (main)
+#   tab_hazard_appendix.{tex,csv}          Table 2: logit, direct, censored
+#   tab_hazard_ame_main.{tex,csv}          AME for Table 1
+#   tab_hazard_robust_uncensored.{tex,csv} logit on frame_logit_full
+#   tab_hazard_robust_penalized.{tex,csv}  brglm2 penalised logit
+#   tab_hazard_robust_broad.{tex,csv}      cloglog, broad treatment
+#   tab_hazard_diag_{main,appendix}.csv    events per AGS2/year
+# ─────────────────────────────────────────────────────────────────────────────
+
+options("marginaleffects_safe" = FALSE)
 
 library(data.table)
 library(fixest)
 library(marginaleffects)
 library(ggplot2)
 
-# -- Paths ---------------------------------------------------------------------
+# -- Paths ────────────────────────────────────────────────────────────────────
 
 argv      <- commandArgs(trailingOnly = FALSE)
 self_flag <- grep("--file=", argv, value = TRUE)
 self <- if (length(self_flag)) {
   normalizePath(sub("--file=", "", self_flag))
 } else if (
-  requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()
+  requireNamespace("rstudioapi", quietly = TRUE) &&
+  rstudioapi::isAvailable()
 ) {
   normalizePath(rstudioapi::getSourceEditorContext()$path)
 } else {
@@ -48,320 +50,345 @@ out_dir    <- file.path(root, "04_results", "02_hazard")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 source(file.path(code_dir, "03_analysis", "_dict.R"))
 
-# -- Load hazard frames --------------------------------------------------------
+# -- I/O ----------------------------------------------------------------------
 
-ph     <- readRDS(file.path(data_final, "frame_hazard.rds"))
-ph_cov <- readRDS(file.path(data_final, "frame_hazard_cov.rds"))
+.read_frame <- function(p) fread(p,
+  colClasses = list(character = c("AGS8", "AGS5", "AGS2", "treat_type")))
 
-# Defensive: drop unit-years missing any of the L1 channels.
-chan_cols <- c("log_pop_dens", "log_steuerkraft_L1", "log_kaufkraft_L1",
+# -- Regressor construction ---------------------------------------------------
+# BEV stock and charger covariates are winsorised at 99th pct on the
+# estimation sample before log1p; this mirrors WINSOR_Q = 0.99 applied to
+# the outcome variables in 00_prep_analysis.R.
+
+# fed_gruene_L1 has ~13k NAs and is used only in col (4); excluding it from
+# the shared filter keeps the common sample at ~75k instead of ~62k.
+# feglm handles per-spec NAs automatically.
+BASE_COLS <- c("log_pop_dens", "log_steuerkraft_L1",
                "bev_stock_p100k_L1", "ev_chargepoints_p100k_L1",
-               "muni_gruene_L1")
-ph <- ph[complete.cases(ph[, ..chan_cols])]
-
-# -- Build z-scored regressors on the estimation sample -----------------------
+               "state_gruene_L1")
 
 zfit <- function(d) {
-  d[, log_dens_z      := z(log_pop_dens)]
-  d[, sk_z            := z(log_steuerkraft_L1)]
-  d[, kk_z            := z(log_kaufkraft_L1)]
-  d[, bev_z           := z(log1p(pmax(bev_stock_p100k_L1, 0)))]
-  d[, chg_z           := z(log1p(pmax(ev_chargepoints_p100k_L1, 0)))]
-  d[, muni_gruene_z   := z(muni_gruene_L1)]
-  d[, state_gruene_z  := z(state_gruene_L1)]
-  d[, fed_gruene_z    := z(fed_gruene_L1)]
+  bev_cap <- quantile(d$bev_stock_p100k_L1,       0.99, na.rm = TRUE)
+  chg_cap <- quantile(d$ev_chargepoints_p100k_L1, 0.99, na.rm = TRUE)
+  d[, bev_win := pmin(pmax(bev_stock_p100k_L1,       0), bev_cap)]
+  d[, chg_win := pmin(pmax(ev_chargepoints_p100k_L1, 0), chg_cap)]
+  d[, log_dens_z     := z(log_pop_dens)]
+  d[, sk_z           := z(log_steuerkraft_L1)]
+  d[, bev_z          := z(log1p(bev_win))]
+  d[, chg_z          := z(log1p(chg_win))]
+  d[, state_gruene_z := z(state_gruene_L1)]
+  d[, fed_gruene_z   := z(fed_gruene_L1)]
+  d[, eco_z          := z(eco_index_L1)]
+  d[, pers_z         := z(log1p(pmax(n_vze_personal_L1, 0)))]
   d
 }
 
-ph <- zfit(ph)
+# -- Formula grid -------------------------------------------------------------
 
-# No-Stadtstaaten subsample (re-z so coefficients are sample-comparable).
-ph_ns <- copy(ph[ns_flag == TRUE])
-ph_ns[, pers_z := z(log1p(pmax(n_vze_personal_L1, 0)))]
-ph_ns <- zfit(ph_ns)
+# 5-column grid: log_dens_z is a universal control, listed last in every spec.
+# Old cols (1) [no density] and (2) [+density] collapsed to a single baseline
+# after density was promoted to a universal control in all specs.
+make_formulas <- function(y) {
+  fe <- "| year + AGS2"
+  list(
+    `(1)` = as.formula(sprintf(
+      "%s ~ sk_z + bev_z + chg_z + state_gruene_z + log_dens_z %s", y, fe)),
+    `(2)` = as.formula(sprintf(
+      "%s ~ sk_z + bev_z + chg_z + pers_z + state_gruene_z + log_dens_z %s",
+      y, fe)),
+    `(3)` = as.formula(sprintf(
+      "%s ~ sk_z + eco_z + pers_z + state_gruene_z + log_dens_z %s", y, fe)),
+    `(4)` = as.formula(sprintf(
+      "%s ~ sk_z + bev_z + chg_z + fed_gruene_z + log_dens_z %s", y, fe)),
+    `(5)` = as.formula(sprintf(
+      "%s ~ sk_z + bev_z + chg_z + kreis_funded + log_dens_z %s", y, fe))
+  )
+}
 
-cat(sprintf(
-  "Hazard frame: %d obs | %d AGS8 | %d direct onsets | rate %.2f%%\n",
-  nrow(ph), uniqueN(ph$AGS8), sum(ph$onset_direct),
-  100 * mean(ph$onset_direct)
-))
-cat(sprintf(
-  "No-Stadtstaaten: %d obs | %d AGS8 | %d onsets\n",
-  nrow(ph_ns), uniqueN(ph_ns$AGS8), sum(ph_ns$onset_direct)
-))
+# -- etable display settings --------------------------------------------------
 
-# -- Formulas ------------------------------------------------------------------
-
-f1 <- onset_direct ~ log_dens_z + muni_gruene_z + bev_z + chg_z +
-        sk_z + kk_z | year + AGS2
-f2 <- onset_direct ~ log_dens_z + muni_gruene_z + bev_z + chg_z +
-        sk_z + kk_z + pers_z | year + AGS2
-f3 <- onset_direct ~ muni_gruene_z + bev_z + chg_z +
-        sk_z + kk_z | year + AGS2
-f4 <- onset_direct ~ log_dens_z + muni_gruene_z + bev_z + chg_z +
-        sk_z + kk_z + kreis_funded | year + AGS2
-f5 <- onset_direct ~ log_dens_z + muni_gruene_z + eco_index_L1 +
-        sk_z + kk_z | year + AGS2
-f6 <- onset_direct ~ log_dens_z + state_gruene_z + bev_z + chg_z +
-        sk_z + kk_z | year + AGS2
-f7 <- onset_direct ~ log_dens_z + fed_gruene_z + bev_z + chg_z +
-        sk_z + kk_z | year + AGS2
-
-cll <- binomial("cloglog")
-lgt <- binomial("logit")
-
-# -- Estimate ------------------------------------------------------------------
-
-cat("\nEstimating cloglog models...\n")
-m_cll <- list(
-  `(1)`      = feglm(f1, data = ph,    family = cll, cluster = ~AGS5),
-  `(2) +P`   = feglm(f2, data = ph_ns, family = cll, cluster = ~AGS5),
-  `(3) -den` = feglm(f3, data = ph,    family = cll, cluster = ~AGS5),
-  `(4) +KF`  = feglm(f4, data = ph,    family = cll, cluster = ~AGS5),
-  `(5) eco`  = feglm(f5, data = ph,    family = cll, cluster = ~AGS5),
-  `(6) S-G`  = feglm(f6, data = ph,    family = cll, cluster = ~AGS5),
-  `(7) F-G`  = feglm(f7, data = ph,    family = cll, cluster = ~AGS5)
+ET_DICT <- c(dict,
+  sk_z           = "log1p Steuerkraft p.c. (z, L1)",
+  bev_z          = "BEV stock p100k (z, L1, 99\\%)",
+  chg_z          = "EV chargers p100k (z, L1, 99\\%)",
+  eco_z          = "EV ecosystem index (z, L1)",
+  pers_z         = "log1p Personnel p.c. (z, L1)",
+  state_gruene_z = "Gr\\\"une vote share, state (z, L1)",
+  fed_gruene_z   = "Gr\\\"une vote share, federal (z, L1)",
+  kreis_funded   = "Kreis funded",
+  log_dens_z     = "Log pop. density (z)"
 )
 
-cat("Estimating logit twins...\n")
-m_lgt <- list(
-  `(1)`      = feglm(f1, data = ph,    family = lgt, cluster = ~AGS5),
-  `(2) +P`   = feglm(f2, data = ph_ns, family = lgt, cluster = ~AGS5),
-  `(3) -den` = feglm(f3, data = ph,    family = lgt, cluster = ~AGS5),
-  `(4) +KF`  = feglm(f4, data = ph,    family = lgt, cluster = ~AGS5),
-  `(5) eco`  = feglm(f5, data = ph,    family = lgt, cluster = ~AGS5),
-  `(6) S-G`  = feglm(f6, data = ph,    family = lgt, cluster = ~AGS5),
-  `(7) F-G`  = feglm(f7, data = ph,    family = lgt, cluster = ~AGS5)
+ET_KEEP <- c("sk_z", "bev_z", "chg_z", "eco_z", "pers_z",
+             "state_gruene_z", "fed_gruene_z", "kreis_funded", "log_dens_z")
+
+et_base <- list(
+  dict         = ET_DICT,
+  keep_raw     = ET_KEEP,
+  digits       = 3,
+  se.below     = TRUE,
+  signif.code  = c("***" = 0.01, "**" = 0.05, "*" = 0.1),
+  fitstat      = ~ n + pr2
 )
 
-# -- Coefficient tables (TeX + CSV twins) -------------------------------------
+.etable_both <- function(models, stem, note, ...) {
+  args <- c(list(models), et_base, list(notes = note), list(...))
+  do.call(etable, args)                                   # console
+  do.call(etable, c(args, list(                           # tex file
+    file    = paste0(stem, ".tex"),
+    replace = TRUE
+  )))
+  write_estimates_csv(models, paste0(stem, ".csv"))       # csv file
+}
 
-tab_note <- paste0(
-  "Discrete-time hazard on AGS8 risk set (year >= 2015). ",
-  "Direct-treatment onset is the event; broadcast-only units remain in the ",
-  "risk set with kreis_funded switching on. Col (2): Hamburg/Bremen/Berlin ",
-  "excluded (personnel conflates municipal/Länder roles). year + AGS2 FE; ",
-  "SEs clustered at AGS5."
-)
+# -- Diagnostics helper -------------------------------------------------------
 
-etable(m_cll, dict = dict, digits = 4, notes = tab_note,
-       file = file.path(out_dir, "tab_hazard_coef.tex"),
-       title = "Discrete-time hazard (cloglog): drivers of EMK onset",
-       replace = TRUE)
-etable(m_lgt, dict = dict, digits = 4, notes = tab_note,
-       file = file.path(out_dir, "tab_hazard_logit.tex"),
-       title = "Logit robustness twin",
-       replace = TRUE)
+.diag <- function(ph, event_col, label) {
+  diag_dt <- rbindlist(list(
+    ph[, .(n_obs = .N, n_events = sum(get(event_col))),
+       by = .(grp = AGS2)][, dim := "AGS2"],
+    ph[, .(n_obs = .N, n_events = sum(get(event_col))),
+       by = .(grp = as.character(year))][, dim := "year"]
+  ))
+  fwrite(diag_dt,
+         file.path(out_dir, sprintf("tab_hazard_diag_%s.csv", label)))
+  zero <- diag_dt[dim == "AGS2" & n_events == 0L]
+  if (nrow(zero))
+    cat(sprintf("  NOTE: %d AGS2 with 0 events\n", nrow(zero)))
+}
 
-write_estimates_csv(m_cll, file.path(out_dir, "tab_hazard_coef.csv"))
-write_estimates_csv(m_lgt, file.path(out_dir, "tab_hazard_logit.csv"))
+# -- Main table runner --------------------------------------------------------
 
-# -- Sensitivity: SEs clustered at AGS2 (Bundesland) instead of AGS5 ----------
-# Point estimates are unchanged (cluster choice only affects vcov). We refit
-# the vcov via fixest::vcov(..., cluster = ~AGS2) and emit a parallel table.
-# With 16 AGS2 clusters and 166 direct onsets, this is conservative against
-# the rare-events / few-treated-clusters concern at AGS5.
+run_table <- function(ph, event_col, link, stem, title_tag, note_extra = "") {
+  cat(sprintf("\n=== %s | event: %s | link: %s ===\n",
+              stem, event_col, link$family))
+  ph <- ph[complete.cases(ph[, ..BASE_COLS])]
+  ph <- zfit(ph)
+  cat(sprintf("  N = %d obs | %d AGS8 | %d events (%.2f%%)\n",
+              nrow(ph), uniqueN(ph$AGS8),
+              sum(ph[[event_col]]), 100 * mean(ph[[event_col]])))
+  .diag(ph, event_col, basename(stem))
+  fs <- make_formulas(event_col)
+  models <- lapply(fs, function(f)
+    feglm(f, data = ph, family = link, cluster = ~AGS2))
+  names(models) <- names(fs)
+  note <- sprintf(
+    paste0(
+      "Discrete-time hazard on the AGS8 risk set (year \\geq 2015). ",
+      "Event: \\texttt{%s}. ",
+      "Cols (3)--(4): include log1p municipal personnel p.c. (z, L1). ",
+      "BEV stock and EV charger covariates winsorised at the 99th pct ",
+      "before log1p transformation. ",
+      "All columns: year + AGS2 fixed effects; SEs clustered on AGS2. ",
+      "%s",
+      "$^{*}$ $p<0.1$, $^{**}$ $p<0.05$, $^{***}$ $p<0.01$."
+    ),
+    event_col,
+    if (nchar(note_extra)) paste0(note_extra, " ") else ""
+  )
+  .etable_both(models, file.path(out_dir, stem), note,
+               title = title_tag)
+  invisible(list(models = models, ph = ph))
+}
 
-tab_note_ags2 <- paste0(tab_note, " SENSITIVITY: SEs clustered at AGS2 ",
-                        "(Bundesland) instead of AGS5.")
+# -- AME table ----------------------------------------------------------------
 
-etable(m_cll,
-       dict = dict, digits = 4, notes = tab_note_ags2,
-       cluster = ~AGS2,
-       file = file.path(out_dir, "tab_hazard_coef_ags2.tex"),
-       title = "Discrete-time hazard (cloglog), SEs clustered at AGS2",
-       replace = TRUE)
-etable(m_lgt,
-       dict = dict, digits = 4, notes = tab_note_ags2,
-       cluster = ~AGS2,
-       file = file.path(out_dir, "tab_hazard_logit_ags2.tex"),
-       title = "Logit twin, SEs clustered at AGS2",
-       replace = TRUE)
-
-write_estimates_csv_cluster <- function(models, file, clf) {
-  rows <- lapply(seq_along(models), function(i) {
-    m  <- models[[i]]
+run_ame <- function(models, stem) {
+  cat(sprintf("\nComputing AMEs for %s...\n", stem))
+  ame_rows <- rbindlist(lapply(seq_along(models), function(i) {
     nm <- names(models)[i]
-    co <- coef(m)
-    V  <- vcov(m, cluster = clf)
-    se <- sqrt(diag(V))
-    data.table(
-      model = nm,
-      term  = names(co),
-      estimate = as.numeric(co),
-      se       = as.numeric(se[names(co)]),
-      n        = nobs(m)
+    am <- tryCatch(
+      avg_slopes(models[[i]], vcov = FALSE),
+      error = function(e) { cat("  AME failed:", nm, "\n"); NULL }
     )
-  })
-  dt <- rbindlist(rows)
-  dt[, ci_lo := estimate - 1.96 * se]
-  dt[, ci_hi := estimate + 1.96 * se]
-  fwrite(dt, file)
-  invisible(dt)
-}
+    if (is.null(am)) return(NULL)
+    dt <- as.data.table(am)
+    dt[, .(model = nm, term, estimate)]
+  }), fill = TRUE)
 
-write_estimates_csv_cluster(m_cll,
-                            file.path(out_dir, "tab_hazard_coef_ags2.csv"),
-                            ~AGS2)
-write_estimates_csv_cluster(m_lgt,
-                            file.path(out_dir, "tab_hazard_logit_ags2.csv"),
-                            ~AGS2)
+  if (nrow(ame_rows) == 0L) return(invisible(NULL))
+  fwrite(ame_rows, file.path(out_dir, paste0(stem, ".csv")))
 
-# -- Average marginal effects (headline table) --------------------------------
-
-cat("\nComputing AMEs via marginaleffects::avg_slopes (vcov=FALSE) ...\n")
-# marginaleffects refuses to compute the FE part of the vcov on fixest models;
-# we pass vcov=FALSE for point AMEs only. Inference for the corresponding
-# linear-index coefficients is in tab_hazard_coef (with clustered SEs); the
-# AME and the cloglog β have the same sign and ranking, so the headline
-# narrative is unaffected.
-ame_rows <- rbindlist(lapply(seq_along(m_cll), function(i) {
-  nm <- names(m_cll)[i]
-  am <- tryCatch(avg_slopes(m_cll[[i]], vcov = FALSE),
-                 error = function(e) {
-                   cat(sprintf("  AME failed for %s: %s\n",
-                               nm, conditionMessage(e))); NULL })
-  if (is.null(am)) return(NULL)
-  am_dt <- as.data.table(am)
-  if (!all(c("term", "estimate") %in% names(am_dt))) return(NULL)
-  am_dt[, .(model = nm, term, estimate, n = nobs(m_cll[[i]]))]
-}), fill = TRUE)
-
-if (nrow(ame_rows) > 0L) {
-  fwrite(ame_rows, file.path(out_dir, "tab_hazard_ame.csv"))
+  # Wide tex: point AMEs only (vcov=FALSE means no SEs available)
   ame_rows[, cell := sprintf("%.4f", estimate)]
-  tab_w <- dcast(ame_rows, term ~ model, value.var = "cell")
-  body  <- apply(tab_w, 1L, function(rw) paste(rw, collapse = " & "))
+  term_order <- intersect(ET_KEEP, unique(ame_rows$term))
+  col_order  <- names(models)
+  est_wide   <- dcast(ame_rows[term %in% term_order],
+                      term ~ model, value.var = "cell", fill = "")
+  est_wide   <- est_wide[match(term_order, term)]
+
+  n_cols <- length(col_order)
   tex_lines <- c(
-    "\\begin{tabular}{l*{7}{c}}", "\\hline",
-    paste(c("Term", names(m_cll)), collapse = " & "), " \\\\",
+    sprintf("\\begin{tabular}{l*{%d}{r}}", n_cols),
+    "\\hline\\hline",
+    paste0(c("", col_order), collapse = " & "), " \\\\",
     "\\hline",
-    paste0(body, " \\\\"),
-    "\\hline", "\\end{tabular}",
-    "% Note: point AMEs only; cloglog coefficient SEs in tab_hazard_coef."
+    vapply(seq_along(term_order), function(i) {
+      lab <- ET_DICT[term_order[i]]
+      if (is.na(lab)) lab <- term_order[i]
+      row <- unlist(est_wide[i, col_order, with = FALSE])
+      paste0(paste(c(lab, row), collapse = " & "), " \\\\")
+    }, character(1L)),
+    "\\hline",
+    sprintf(
+      "\\multicolumn{%d}{l}{\\small Point AMEs (cloglog, vcov=FALSE; SEs not available with FE).}",
+      n_cols + 1L
+    ),
+    "\\end{tabular}"
   )
-  writeLines(tex_lines, file.path(out_dir, "tab_hazard_ame.tex"))
-} else {
-  cat("No AMEs produced — skipping AME tables.\n")
+  writeLines(tex_lines, file.path(out_dir, paste0(stem, ".tex")))
+  cat("AME table written.\n")
+  invisible(ame_rows)
 }
 
-# -- Robustness: brglm2 penalized logit, LPM, complete-case --------------------
+# -- Robustness ---------------------------------------------------------------
 
-robust_rows <- list()
+run_robustness <- function(ph_full, ph_broad) {
+  cat("\n========== Robustness ==========\n")
 
-# (a) brglm2 penalized logit on (1), with explicit FE dummies (small set).
-if (requireNamespace("brglm2", quietly = TRUE)) {
-  cat("Fitting brglm2 penalized logit on spec (1)...\n")
-  br_df <- as.data.frame(ph)
-  br_df$year_f <- factor(br_df$year)
-  br_df$ags2_f <- factor(br_df$AGS2)
-  br_fit <- tryCatch(
-    glm(onset_direct ~ log_dens_z + muni_gruene_z + bev_z + chg_z +
-          sk_z + kk_z + year_f + ags2_f,
-        data = br_df, family = binomial("logit"),
-        method = brglm2::brglm_fit),
-    error = function(e) { cat("brglm2 error:", conditionMessage(e), "\n"); NULL }
+  # (a) Uncensored logit
+  cat("\n--- (a) Uncensored logit (frame_logit_full) ---\n")
+  ph_u <- ph_full[complete.cases(ph_full[, ..BASE_COLS])]
+  ph_u <- zfit(ph_u)
+  cat(sprintf("  N = %d | %d AGS8 | %d onset_direct (%.2f%%)\n",
+              nrow(ph_u), uniqueN(ph_u$AGS8),
+              sum(ph_u$onset_direct), 100 * mean(ph_u$onset_direct)))
+  fs_u <- make_formulas("onset_direct")
+  m_unc <- lapply(fs_u, function(f)
+    feglm(f, data = ph_u, family = binomial("logit"), cluster = ~AGS2))
+  names(m_unc) <- names(fs_u)
+  note_unc <- paste0(
+    "Robustness: uncensored logit. Post-onset AGS8-years are retained; ",
+    "the onset indicator is mechanically zero after first onset. ",
+    "Otherwise identical to Table 1. year + AGS2 FE; SEs clustered on AGS2. ",
+    "$^{*}$ $p<0.1$, $^{**}$ $p<0.05$, $^{***}$ $p<0.01$."
   )
-  if (!is.null(br_fit)) {
-    co <- coef(br_fit); se <- sqrt(diag(vcov(br_fit)))
-    keep <- !grepl("^(year_f|ags2_f|\\(Intercept\\))", names(co))
-    robust_rows[["brglm2_logit_(1)"]] <- data.table(
-      estimator = "brglm2_logit", model = "(1)",
-      term = names(co)[keep],
-      estimate = co[keep], se = se[keep],
-      n = nobs(br_fit)
+  .etable_both(m_unc,
+               file.path(out_dir, "tab_hazard_robust_uncensored"),
+               note_unc,
+               title = "Robustness: uncensored logit (onset\\_direct)")
+
+  # (b) Penalised logit (brglm2), all 6 specs
+  if (requireNamespace("brglm2", quietly = TRUE)) {
+    cat("\n--- (b) Penalised logit (brglm2), all 6 specs ---\n")
+    ph_br <- copy(ph_full[complete.cases(ph_full[, ..BASE_COLS])])
+    ph_br <- zfit(ph_br)
+    ph_br[, year_f := factor(year)][, ags2_f := factor(AGS2)]
+
+    spec_vars <- list(
+      `(1)` = "sk_z + bev_z + chg_z + state_gruene_z + log_dens_z",
+      `(2)` = "sk_z + bev_z + chg_z + pers_z + state_gruene_z + log_dens_z",
+      `(3)` = "sk_z + eco_z + pers_z + state_gruene_z + log_dens_z",
+      `(4)` = "sk_z + bev_z + chg_z + fed_gruene_z + log_dens_z",
+      `(5)` = "sk_z + bev_z + chg_z + kreis_funded + log_dens_z"
     )
+    br_rows <- rbindlist(lapply(names(spec_vars), function(nm) {
+      f_br <- as.formula(sprintf(
+        "onset_direct ~ %s + year_f + ags2_f", spec_vars[[nm]]))
+      fit <- tryCatch(
+        glm(f_br, data = as.data.frame(ph_br),
+            family = binomial("logit"),
+            method = brglm2::brglm_fit),
+        error = function(e) {
+          cat(sprintf("  brglm2 failed spec %s: %s\n", nm, conditionMessage(e)))
+          NULL
+        }
+      )
+      if (is.null(fit)) return(NULL)
+      co   <- coef(fit); se <- sqrt(diag(vcov(fit)))
+      keep <- !grepl("^(year_f|ags2_f|\\(Intercept\\))", names(co))
+      data.table(model = nm, term = names(co)[keep],
+                 estimate = co[keep], se = se[keep], n = nobs(fit))
+    }), fill = TRUE)
+
+    if (nrow(br_rows) > 0L) {
+      fwrite(br_rows,
+             file.path(out_dir, "tab_hazard_robust_penalized.csv"))
+      # Pivot to wide for tex display
+      br_rows[, cell := sprintf("%.3f", estimate)]
+      br_wide <- dcast(br_rows, term ~ model, value.var = "cell", fill = "")
+      se_rows <- copy(br_rows)[, cell := sprintf("(%.3f)", se)]
+      se_wide <- dcast(se_rows, term ~ model, value.var = "cell", fill = "")
+      term_ord <- intersect(ET_KEEP, br_wide$term)
+      br_wide  <- br_wide[match(term_ord, term)]
+      se_wide  <- se_wide[match(term_ord, term)]
+      col_ord  <- names(spec_vars)
+      n_c <- length(col_ord)
+      tex_br <- c(
+        sprintf("\\begin{tabular}{l*{%d}{r}}", n_c),
+        "\\hline\\hline",
+        paste0(c("", col_ord), collapse = " & "), " \\\\",
+        "\\hline",
+        do.call(c, lapply(seq_along(term_ord), function(i) {
+          lab <- ET_DICT[term_ord[i]]; if (is.na(lab)) lab <- term_ord[i]
+          e_r <- unlist(br_wide[i, col_ord, with = FALSE])
+          s_r <- unlist(se_wide[i, col_ord, with = FALSE])
+          c(paste0(c(lab, e_r), collapse=" & "), " \\\\",
+            paste0(c("",  s_r), collapse=" & "), " \\\\")
+        })),
+        "\\hline",
+        sprintf(
+          "\\multicolumn{%d}{l}{\\small Penalised logit (brglm2, Firth correction). No cluster correction.}",
+          n_c + 1L),
+        "\\end{tabular}"
+      )
+      writeLines(tex_br,
+                 file.path(out_dir, "tab_hazard_robust_penalized.tex"))
+      cat("Penalised logit table written.\n")
+    }
+  } else {
+    cat("brglm2 not installed — skipping penalised logit.\n")
   }
-} else {
-  cat("brglm2 not installed; skipping penalized logit robustness.\n")
+
+  # (c) Broad treatment (cloglog, censored)
+  cat("\n--- (c) Broad treatment cloglog (frame_hazard_cov) ---\n")
+  ph_brd <- ph_broad[complete.cases(ph_broad[, ..BASE_COLS])]
+  ph_brd <- zfit(ph_brd)
+  cat(sprintf("  N = %d | %d AGS8 | %d onset_broad (%.2f%%)\n",
+              nrow(ph_brd), uniqueN(ph_brd$AGS8),
+              sum(ph_brd$onset_broad), 100 * mean(ph_brd$onset_broad)))
+  fs_brd <- make_formulas("onset_broad")
+  m_brd <- lapply(fs_brd, function(f)
+    feglm(f, data = ph_brd, family = binomial("cloglog"), cluster = ~AGS2))
+  names(m_brd) <- names(fs_brd)
+  note_brd <- paste0(
+    "Robustness: broad treatment (direct OR Kreis-broadcast coverage). ",
+    "Otherwise identical to Table 1. ",
+    "year + AGS2 FE; SEs clustered on AGS2. ",
+    "$^{*}$ $p<0.1$, $^{**}$ $p<0.05$, $^{***}$ $p<0.01$."
+  )
+  .etable_both(m_brd,
+               file.path(out_dir, "tab_hazard_robust_broad"),
+               note_brd,
+               title = "Robustness: broad treatment cloglog (onset\\_broad)")
 }
 
-# (b) LPM via feols on (1)
-cat("Fitting LPM (feols) on spec (1)...\n")
-m_lpm <- feols(f1, data = ph, cluster = ~AGS5)
-co <- coef(m_lpm); se <- sqrt(diag(vcov(m_lpm)))
-robust_rows[["lpm_(1)"]] <- data.table(
-  estimator = "lpm", model = "(1)",
-  term = names(co), estimate = co, se = se, n = nobs(m_lpm)
+# -- Run ----------------------------------------------------------------------
+
+ph_direct  <- .read_frame(file.path(data_final, "frame_hazard.csv"))
+ph_broad   <- .read_frame(file.path(data_final, "frame_hazard_cov.csv"))
+ph_full    <- .read_frame(file.path(data_final, "frame_logit_full.csv"))
+ph_cov_full <- .read_frame(file.path(data_final, "frame_logit_cov_full.csv"))
+
+# Table 1: cloglog, direct, censored
+res_main <- run_table(
+  ph_direct, "onset_direct", binomial("cloglog"),
+  stem      = "tab_hazard_main",
+  title_tag = "Discrete-time hazard (cloglog), direct treatment"
 )
 
-# (c) Complete-case: drop rows where any _imp flag of used covariates is TRUE.
-imp_flags <- c("N_elektro_overall_imp", "bev_stock_p100k_L1")  # placeholder
-# Use any _imp column on the L1 inputs: bev_stock & chargepoints stock came
-# from KBA / Ladestationen; we approximate "no imputed" by requiring
-# B_elektro_overall_imp == FALSE (proxies bev_stock).
-if ("B_elektro_overall_imp" %in% names(ph)) {
-  ph_cc <- ph[B_elektro_overall_imp == FALSE]
-  m_cc <- feglm(f1, data = ph_cc, family = cll, cluster = ~AGS5)
-  co <- coef(m_cc); se <- sqrt(diag(vcov(m_cc)))
-  robust_rows[["cc_(1)"]] <- data.table(
-    estimator = "cloglog_complete_case", model = "(1)",
-    term = names(co), estimate = co, se = se, n = nobs(m_cc)
-  )
-}
+# AME for Table 1
+run_ame(res_main$models, "tab_hazard_ame_main")
 
-robust_dt <- rbindlist(robust_rows, fill = TRUE)
-fwrite(robust_dt, file.path(out_dir, "tab_hazard_robust.csv"))
+# Table 2 (appendix): logit, direct, censored
+run_table(
+  ph_direct, "onset_direct", binomial("logit"),
+  stem      = "tab_hazard_appendix",
+  title_tag = "Appendix: logit (censored), direct treatment",
+  note_extra = "Appendix table: logit link; risk-set censoring retained."
+)
 
-# -- Diagnostics: events per AGS2 / per year ----------------------------------
-
-diag_dt <- rbindlist(list(
-  ph[, .(n_obs = .N, n_events = sum(onset_direct)), by = .(grp = AGS2)
-     ][, dim := "AGS2"],
-  ph[, .(n_obs = .N, n_events = sum(onset_direct)), by = .(grp = as.character(year))
-     ][, dim := "year"]
-), use.names = TRUE)
-setcolorder(diag_dt, c("dim", "grp", "n_obs", "n_events"))
-fwrite(diag_dt, file.path(out_dir, "tab_hazard_diag.csv"))
-
-# Assert no AGS2 has zero events; fixest would silently drop the FE level
-zero_ev <- diag_dt[dim == "AGS2" & n_events == 0L]
-if (nrow(zero_ev)) {
-  cat(sprintf("NOTE: %d AGS2 with zero events — FE drops these rows:\n",
-              nrow(zero_ev)))
-  print(zero_ev)
-}
-
-# -- Coefficient-stability figure: (1) vs (3) on shared channels --------------
-
-stab_rows <- rbindlist(list(
-  data.table(model = "(1)",   term = names(coef(m_cll[["(1)"]])),
-             est   = coef(m_cll[["(1)"]]),
-             se    = sqrt(diag(vcov(m_cll[["(1)"]])))),
-  data.table(model = "(3) -den", term = names(coef(m_cll[["(3) -den"]])),
-             est   = coef(m_cll[["(3) -den"]]),
-             se    = sqrt(diag(vcov(m_cll[["(3) -den"]]))))
-))
-shared <- intersect(stab_rows[model == "(1)", term],
-                    stab_rows[model == "(3) -den", term])
-stab_rows <- stab_rows[term %in% shared]
-p_stab <- ggplot(stab_rows, aes(x = term, y = est, color = model)) +
-  geom_pointrange(aes(ymin = est - 1.96 * se, ymax = est + 1.96 * se),
-                  position = position_dodge(width = 0.4)) +
-  geom_hline(yintercept = 0, color = "grey50", linetype = "dashed") +
-  coord_flip() +
-  labs(x = NULL, y = "Coefficient (cloglog)",
-       color = NULL,
-       caption = "Coefficient stability when log_dens_z is dropped.") +
-  theme_minimal(base_size = 11) +
-  theme(legend.position = "bottom")
-ggsave(file.path(out_dir, "fig_coef_stability.pdf"), p_stab,
-       width = 7, height = 4.5)
-
-# -- Coverage-event appendix variant ------------------------------------------
-# Spec (1) only, on the broad-coverage hazard frame.
-
-ph_cov <- ph_cov[complete.cases(ph_cov[, ..chan_cols])]
-ph_cov <- zfit(ph_cov)
-f1_cov <- onset_broad ~ log_dens_z + muni_gruene_z + bev_z + chg_z +
-           sk_z + kk_z | year + AGS2
-m_cov <- feglm(f1_cov, data = ph_cov, family = cll, cluster = ~AGS5)
-etable(list(`(1) coverage` = m_cov),
-       dict = dict, digits = 4,
-       notes = paste0("Coverage-event hazard: event = first year of any ",
-                      "EMK coverage (direct ∪ Kreis broadcast)."),
-       file = file.path(out_dir, "tab_hazard_cov.tex"), replace = TRUE)
-write_estimates_csv(list(`(1) coverage` = m_cov),
-                    file.path(out_dir, "tab_hazard_cov.csv"))
+# Table 3+: robustness
+run_robustness(ph_full, ph_broad)
 
 cat(sprintf("\nHazard outputs -> %s\n", out_dir))

@@ -1,19 +1,27 @@
 # ───────────────────────────────────────────────────────────────────────────────
-# 04_did_robustness.R   — Robustness for Part (ii)
+# 04_did_robustness.R   — Robustness for the main DiD result
 #
-#   - Sun-Abraham via fixest::sunab on bev_neuzulassungen_p100k, corp, private
-#   - PPML / Wooldridge via fepois on counts with offset(log(xbev))
-#   - Wild cluster bootstrap on TWFE event-study (sanity, if few clusters)
-#   - Variations: anticipation ∈ {0,1}; drop 2016 cohort; complete-case on
-#     _imp flags; drop COVID years 2020–21
+# Headline outcome: bev_neuzulassungen_p100k (level + log1p), broad frame.
+# Each variant runs BJS (static) + CS (simple ATT). PPML/count specifications
+# have been dropped: the bare N_elektro_* columns are not in the panel, and
+# the per-100k rate already gives the substantive answer.
+#
+# Variants:
+#   baseline           anticip 0, no xformla              (matches 03 headline)
+#   conditional        anticip 0, xformla=XFORMLA_CS      (covariate-adjusted)
+#   anticipation_1     anticip 1, no xformla
+#   drop_2016          anticip 0, exclude 2016 cohort
+#   drop_covid         anticip 0, exclude 2020-21         (short-run only)
+#   complete_case      anticip 0, drop rows where the outcome's _imp == TRUE
+#   notyet_evertreated anticip 0, ever-treated only, control=notyettreated
+#                                                         (selection probe)
 #
 # Outputs (04_results/04_did_robustness/):
-#   est_att_robust.csv          one row per variation × outcome
-#   fig_robust_grid.pdf         one appendix figure (forest of ATT × variant)
+#   est_att_robust.csv          one row per variant × scale × estimator
+#   fig_robust_grid.pdf         forest: ATT × variant, by scale
 # ───────────────────────────────────────────────────────────────────────────────
 
 library(data.table)
-library(fixest)
 library(did)
 library(didimputation)
 library(ggplot2)
@@ -38,25 +46,57 @@ out_dir    <- file.path(root, "04_results", "04_did_robustness")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 source(file.path(code_dir, "03_analysis", "_dict.R"))
 
-frame_broad <- readRDS(file.path(data_final, "frame_did_broad.rds"))
+.read_frame <- function(p) fread(p,
+  colClasses = list(character = c("AGS8", "AGS5", "AGS2", "treat_type")))
+frame_broad <- .read_frame(file.path(data_final, "frame_did_broad.csv"))
 
-OUTCOMES_CONT  <- c("bev_neuzulassungen_p100k", "bev_corporate_p100k",
-                    "bev_private_p100k")
-OUTCOMES_COUNT <- c("N_elektro_overall", "N_elektro_corporate",
-                    "N_elektro_private")
+OUTCOMES <- c(
+  level = "bev_neuzulassungen_p100k",
+  log1p = "log1p_bev_neuzulassungen_p100k"
+)
+IMP_FLAG <- "N_elektro_overall_imp"
 
-# -- Helper: Sun-Abraham via sunab + fixest -----------------------------------
-# fixest::sunab convention: never-treated coded to 10000 (far cohort).
+# -- Variant definitions -------------------------------------------------------
 
-sunab_fit <- function(dat, yname) {
-  d <- as.data.table(dat)
-  d[, sunab_g := ifelse(is.na(first_treat_broad), 10000L,
-                        as.integer(first_treat_broad))]
-  feols(as.formula(sprintf("%s ~ sunab(sunab_g, year) | AGS8 + year", yname)),
-        data = d, cluster = ~AGS5)
-}
+variants <- list(
+  baseline = list(
+    filter = function(d) d, anticip = 0L, xformla = NULL,
+    control = "nevertreated", scope = "full"
+  ),
+  conditional = list(
+    filter = function(d) d, anticip = 0L, xformla = XFORMLA_CS,
+    control = "nevertreated", scope = "full"
+  ),
+  anticipation_1 = list(
+    filter = function(d) d, anticip = 1L, xformla = NULL,
+    control = "nevertreated", scope = "full"
+  ),
+  drop_2016 = list(
+    filter = function(d) d[is.na(first_treat_broad) | first_treat_broad != 2016L],
+    anticip = 0L, xformla = NULL,
+    control = "nevertreated", scope = "full"
+  ),
+  drop_covid = list(
+    filter = function(d) d[!(year %in% c(2020L, 2021L))],
+    anticip = 0L, xformla = NULL,
+    control = "nevertreated", scope = "short_run_only"
+  ),
+  complete_case = list(
+    filter = function(d) {
+      if (!(IMP_FLAG %in% names(d))) return(d)
+      d[get(IMP_FLAG) == FALSE]
+    },
+    anticip = 0L, xformla = NULL,
+    control = "nevertreated", scope = "full"
+  ),
+  notyet_evertreated = list(
+    filter = function(d) d[!is.na(first_treat_broad)],
+    anticip = 0L, xformla = NULL,
+    control = "notyettreated", scope = "selection_probe"
+  )
+)
 
-# -- Helper: BJS ATT (simple) -------------------------------------------------
+# -- Estimators ---------------------------------------------------------------
 
 bjs_simple <- function(dat, yname) {
   r <- tryCatch(as.data.table(did_imputation(
@@ -65,158 +105,91 @@ bjs_simple <- function(dat, yname) {
     gname       = "gname_bjs",
     tname       = "year",
     idname      = "ags8_id",
-    horizon     = NULL,   # static effect per didimputation v0.5.1
+    horizon     = NULL,
     cluster_var = "AGS5"
   )), error = function(e) NULL)
   if (is.null(r)) return(NULL)
   row <- r[term == "treat"][1L]
   if (is.null(row) || nrow(row) == 0L) return(NULL)
-  list(estimate = row$estimate, se = row$std.error, n_obs = nrow(dat))
+  list(estimate = row$estimate, se = row$std.error)
 }
 
-# -- Variant grid --------------------------------------------------------------
+cs_simple <- function(dat, yname, anticip, xformla, control_group) {
+  cs <- tryCatch(att_gt(
+    yname = yname, gname = "gname_cs", idname = "ags8_id", tname = "year",
+    data = as.data.frame(dat), control_group = control_group,
+    anticipation = anticip, xformla = xformla,
+    est_method = "dr",
+    clustervars = "AGS5", bstrap = TRUE, biters = 999L,
+    allow_unbalanced_panel = TRUE,
+    print_details = FALSE
+  ), error = function(e) {
+    cat("    CS err:", conditionMessage(e), "\n"); NULL })
+  if (is.null(cs)) return(NULL)
+  s <- tryCatch(aggte(cs, type = "simple", na.rm = TRUE),
+                error = function(e) NULL)
+  if (is.null(s)) return(NULL)
+  list(estimate = s$overall.att, se = s$overall.se)
+}
 
-variants <- list(
-  baseline       = list(filter = function(d) d,                     anticip = 0L),
-  anticipation_1 = list(filter = function(d) d,                     anticip = 1L),
-  drop_2016      = list(filter = function(d) d[is.na(first_treat_broad) | first_treat_broad != 2016L],
-                        anticip = 0L),
-  drop_covid     = list(filter = function(d) d[!(year %in% c(2020L, 2021L))],
-                        anticip = 0L),
-  complete_case  = list(filter = function(d) {
-    cc <- d
-    if ("B_elektro_overall_imp" %in% names(d))
-      cc <- cc[B_elektro_overall_imp == FALSE]
-    cc
-  }, anticip = 0L)
-)
+# -- Run loop -----------------------------------------------------------------
 
 rows <- list()
 
 for (vname in names(variants)) {
-  vspec <- variants[[vname]]
-  dat   <- vspec$filter(frame_broad)
-  cat(sprintf("\n=== variant: %s | %d obs | %d treated AGS8 ===\n",
-              vname, nrow(dat), uniqueN(dat[gname_cs > 0L, AGS8])))
+  v <- variants[[vname]]
+  dat <- v$filter(frame_broad)
+  n_treated <- uniqueN(dat[gname_cs > 0L, AGS8])
+  cat(sprintf("\n=== %s (scope=%s, n=%d, treated=%d) ===\n",
+              vname, v$scope, nrow(dat), n_treated))
 
-  for (yname in OUTCOMES_CONT) {
-    # (a) Sun-Abraham
-    m_sa <- tryCatch(sunab_fit(dat, yname), error = function(e) {
-      cat("  SA error:", conditionMessage(e), "\n"); NULL })
-    if (!is.null(m_sa)) {
-      sa_att <- tryCatch(summary(m_sa, agg = "ATT"), error = function(e) NULL)
-      if (!is.null(sa_att)) {
-        co <- coef(sa_att); se <- sqrt(diag(vcov(sa_att)))
-        rows[[length(rows) + 1L]] <- data.table(
-          variant = vname, estimator = "Sun-Abraham", outcome = yname,
-          estimate = co[1L], se = se[1L]
-        )
-      }
+  for (sc in names(OUTCOMES)) {
+    yname <- OUTCOMES[[sc]]
+    if (!(yname %in% names(dat))) {
+      cat(sprintf("  skip: %s missing\n", yname)); next
     }
+    dat_y <- dat[!is.na(get(yname))]
 
-    # (b) BJS
-    b <- bjs_simple(dat, yname)
+    b <- bjs_simple(dat_y, yname)
     if (!is.null(b))
       rows[[length(rows) + 1L]] <- data.table(
-        variant = vname, estimator = "BJS", outcome = yname,
+        variant = vname, scope = v$scope, scale = sc,
+        outcome = yname, estimator = "BJS",
         estimate = b$estimate, se = b$se
       )
 
-    # (c) CS-dr (anticipation per variant)
-    cs <- tryCatch(att_gt(
-      yname = yname, gname = "gname_cs", idname = "ags8_id", tname = "year",
-      data = as.data.frame(dat), control_group = "nevertreated",
-      anticipation = vspec$anticip, xformla = NULL,
-      est_method = "dr",
-      clustervars = "AGS5", bstrap = TRUE, biters = 999L,
-      allow_unbalanced_panel = TRUE,
-      print_details = FALSE
-    ), error = function(e) NULL)
-    if (!is.null(cs)) {
-      s <- tryCatch(aggte(cs, type = "simple", na.rm = TRUE),
-                    error = function(e) NULL)
-      if (!is.null(s))
-        rows[[length(rows) + 1L]] <- data.table(
-          variant = vname, estimator = "CS",
-          outcome = yname,
-          estimate = s$overall.att, se = s$overall.se
-        )
-    }
+    c <- cs_simple(dat_y, yname, v$anticip, v$xformla, v$control)
+    if (!is.null(c))
+      rows[[length(rows) + 1L]] <- data.table(
+        variant = vname, scope = v$scope, scale = sc,
+        outcome = yname, estimator = "CS",
+        estimate = c$estimate, se = c$se
+      )
   }
-
-  # (d) PPML / fepois on counts with offset(log(xbev)).
-  # Cohort × event-time interactions for the proportional-effect reading.
-  for (yname in OUTCOMES_COUNT) {
-    d <- copy(dat)
-    d <- d[!is.na(get(yname)) & xbev > 0]
-    d[, cohort := fifelse(is.na(first_treat_broad), 10000L,
-                          as.integer(first_treat_broad))]
-    fml <- as.formula(sprintf(
-      "%s ~ sunab(cohort, year) + offset(log(xbev)) | AGS8 + year",
-      yname))
-    m_ppml <- tryCatch(fepois(fml, data = d, cluster = ~AGS5),
-                       error = function(e) {
-                         cat("  PPML err:", conditionMessage(e), "\n"); NULL })
-    if (!is.null(m_ppml)) {
-      s_att <- tryCatch(summary(m_ppml, agg = "ATT"), error = function(e) NULL)
-      if (!is.null(s_att)) {
-        co <- coef(s_att); se <- sqrt(diag(vcov(s_att)))
-        rows[[length(rows) + 1L]] <- data.table(
-          variant = vname, estimator = "PPML", outcome = yname,
-          estimate = co[1L], se = se[1L]
-        )
-      }
-    }
-  }
-}
-
-# -- Wild cluster bootstrap on TWFE event-study (sanity, if few clusters) -----
-
-if (requireNamespace("fwildclusterboot", quietly = TRUE)) {
-  d <- copy(frame_broad)
-  d[, treat := as.integer(!is.na(first_treat_broad) &
-                          year >= first_treat_broad)]
-  m_twfe <- feols(bev_neuzulassungen_p100k ~ treat | AGS8 + year,
-                  data = d, cluster = ~AGS5)
-  bt <- tryCatch(fwildclusterboot::boottest(
-    m_twfe, param = "treat", clustid = "AGS5", B = 999L, type = "rademacher"
-  ), error = function(e) {
-    cat("Wild boot err:", conditionMessage(e), "\n"); NULL })
-  if (!is.null(bt)) {
-    rows[[length(rows) + 1L]] <- data.table(
-      variant = "wildboot", estimator = "TWFE_wildboot",
-      outcome = "bev_neuzulassungen_p100k",
-      estimate = coef(m_twfe)["treat"],
-      se       = NA_real_,
-      ci_lo    = bt$conf_int[1L],
-      ci_hi    = bt$conf_int[2L],
-      p_value  = bt$p_val
-    )
-  }
-} else {
-  cat("fwildclusterboot not installed; skipping wild-cluster bootstrap.\n")
 }
 
 robust_dt <- rbindlist(rows, use.names = TRUE, fill = TRUE)
-robust_dt[, ci_lo := fifelse(is.na(ci_lo) & !is.na(se), estimate - 1.96 * se, ci_lo)]
-robust_dt[, ci_hi := fifelse(is.na(ci_hi) & !is.na(se), estimate + 1.96 * se, ci_hi)]
+robust_dt[, ci_lo := estimate - 1.96 * se]
+robust_dt[, ci_hi := estimate + 1.96 * se]
 fwrite(robust_dt, file.path(out_dir, "est_att_robust.csv"))
 
-# -- Forest figure: ATT × variant (main outcome only) -------------------------
+# -- Forest figure: 2 panels (level, log1p), variants on y-axis ---------------
 
-fig_dt <- robust_dt[outcome == "bev_neuzulassungen_p100k"]
-if (nrow(fig_dt) > 0L) {
-  p <- ggplot(fig_dt,
-              aes(x = paste(variant, estimator, sep = "/"),
-                  y = estimate)) +
+if (nrow(robust_dt) > 0L) {
+  pdt <- copy(robust_dt)
+  pdt[, label := paste(variant, estimator, sep = " / ")]
+  pdt[, label := factor(label, levels = unique(label))]
+  p <- ggplot(pdt, aes(x = label, y = estimate, color = scope)) +
     geom_hline(yintercept = 0, color = "grey50", linetype = "dashed") +
     geom_pointrange(aes(ymin = ci_lo, ymax = ci_hi)) +
+    facet_wrap(~ scale, scales = "free_x") +
     coord_flip() +
-    labs(x = NULL, y = "ATT (BEV new registrations p100k)",
-         caption = "Robustness grid — broad frame, main outcome.") +
+    labs(x = NULL, y = "ATT (BEV new registrations per 100k)",
+         color = "Scope",
+         caption = "drop_covid is short-run only; notyet_evertreated is a selection probe.") +
     theme_minimal(base_size = 11)
   ggsave(file.path(out_dir, "fig_robust_grid.pdf"), p,
-         width = 7, height = 5.5)
+         width = 9, height = 5.5)
 }
 
 cat(sprintf("\nDiD robustness outputs -> %s\n", out_dir))

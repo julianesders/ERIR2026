@@ -52,12 +52,38 @@ OUTCOME_LABELS <- c(
   ice_neuzulassungen_p100k = "ICE new registrations per 100k (placebo)"
 )
 
-# Event-study horizon for plots / aggte
+# Event-study horizon for plots / aggte. ES_MAX is the *display* default; each
+# downstream script should compute its own data-driven cap (last outcome year
+# minus earliest reachable cohort) via `es_max_data_driven()` below and pass it
+# to aggte() / cap displayed ribbons.
 ES_MIN <- -4L
-ES_MAX <-  4L
+ES_MAX <-  7L
 
 # Stadtstaaten (n_vze_personal conflates municipal / Länder roles)
 STADTSTAATEN <- c("02", "04", "11")
+
+# BJS never-treated coding. didimputation v0.5.1 docs say `0`; we lock it here
+# so 03/04/06 cannot drift apart. The A1 guard in 03_did_main.R verifies the
+# untreated sample is non-degenerate; if it is, switch this to NA_real_ in one
+# place and rerun.
+BJS_NEVER <- 0  # numeric so fifelse stays double; flip to NA_real_ if A1 trips
+
+# Canonical CS-dr xformla — used by 03, 04, 05, 06. Baseline (z'd) covariates.
+# Note: bev_base_z and chg_base_z are dropped because (a) baseline 2014-16
+# BEV/charge counts are mass-zero across the AGS8 cross-section, so they
+# collapse to a near-constant column inside small (g,t) cells and trigger
+# singular-matrix errors in the DR fit; (b) baseline outcome is mechanically
+# related to the outcome family and is the wrong control for a flow.
+XFORMLA_CS <- ~ kk_base_z + sk_base_z + dens_base_z + green_base_z
+
+# Data-driven upper horizon: last outcome year minus earliest reachable cohort.
+# Pass the data.table and a non-NA outcome column.
+es_max_data_driven <- function(dat, yname, gname_col = "gname_cs") {
+  yr_max  <- dat[!is.na(get(yname)), max(year)]
+  g_min   <- dat[get(gname_col) > 0L, min(get(gname_col))]
+  if (!is.finite(yr_max) || !is.finite(g_min)) return(ES_MAX)
+  max(1L, yr_max - g_min)
+}
 
 # Standard z helper, used after every sample restriction so each model's
 # regressors are standardised on its own estimation sample.
@@ -75,7 +101,7 @@ wq <- function(x, w, probs) {
 
 # CSV+TeX twin writer for fixest etable. Writes a .tex and a .csv with the
 # same coefficient/SE numbers, plus a manifest row.
-write_estimates_csv <- function(models, file, dict = NULL) {
+write_estimates_csv <- function(models, file) {
   rows <- lapply(seq_along(models), function(i) {
     m  <- models[[i]]
     nm <- names(models)[i]
