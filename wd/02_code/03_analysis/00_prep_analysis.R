@@ -329,6 +329,39 @@ fwrite(logit_cov_full, file.path(data_final, "frame_logit_cov_full.csv"))
 
 panel[, ags8_id := .GRP, by = AGS8]
 
+# Drop cohorts with fewer than COHORT_MIN treated units (singleton / near-
+# singleton cohorts give rank-deficient within-cohort covariance in CS and
+# unstable DR propensity fits). Units in dropped cohorts are removed ENTIRELY
+# (their rows have gname_cs > 0, so the never-treated pool is untouched; they
+# are NOT reclassified as controls). Applied per-frame because direct and broad
+# have different cohort sizes. Logs the drop and asserts gname_bjs consistency.
+drop_small_cohorts <- function(frame, label) {
+  cohort_n <- frame[gname_cs > 0L, .(n = uniqueN(AGS8)),
+                    by = gname_cs][order(gname_cs)]
+  small <- cohort_n[n < COHORT_MIN, gname_cs]
+  if (length(small)) {
+    n_units_drop <- frame[gname_cs %in% small, uniqueN(AGS8)]
+    n_rows_drop  <- frame[gname_cs %in% small, .N]
+    frame <- frame[!(gname_cs %in% small)]
+    surv  <- cohort_n[!(gname_cs %in% small)]
+    cat(sprintf(
+      "COHORT_MIN=%d [%s]: dropped cohorts {%s} -> %d AGS8, %d rows. Surviving cohorts: %s.\n",
+      COHORT_MIN, label, paste(small, collapse = ", "),
+      n_units_drop, n_rows_drop,
+      paste(sprintf("%d(%d)", surv$gname_cs, surv$n), collapse = " ")))
+  } else {
+    cat(sprintf(
+      "COHORT_MIN=%d [%s]: no cohorts below threshold; all %d retained.\n",
+      COHORT_MIN, label, nrow(cohort_n)))
+  }
+  # The row-drop removes gname_bjs treated rows too (same rows). Assert the two
+  # treated-codings stay in sync so a future BJS recoding can't silently desync.
+  n_cs  <- frame[gname_cs > 0L, uniqueN(AGS8)]
+  n_bjs <- frame[gname_bjs > 0 & gname_bjs != BJS_NEVER, uniqueN(AGS8)]
+  stopifnot(n_cs == n_bjs)
+  frame
+}
+
 frame_did_broad <- copy(panel)
 frame_did_broad[, gname_cs  := fifelse(is.na(first_treat_broad), 0L,
                                        as.integer(first_treat_broad))]
@@ -337,6 +370,7 @@ frame_did_broad[, gname_cs  := fifelse(is.na(first_treat_broad), 0L,
 # untreated estimation sample is non-degenerate; if it is, flip `BJS_NEVER`.
 frame_did_broad[, gname_bjs := fifelse(is.na(first_treat_broad), BJS_NEVER,
                                        as.numeric(first_treat_broad))]
+frame_did_broad <- drop_small_cohorts(frame_did_broad, "broad")
 fwrite(frame_did_broad, file.path(data_final, "frame_did_broad.csv"))
 
 frame_did_direct <- panel[treat_type != "broadcast_only"]
@@ -344,6 +378,7 @@ frame_did_direct[, gname_cs  := fifelse(is.na(first_treat_direct), 0L,
                                         as.integer(first_treat_direct))]
 frame_did_direct[, gname_bjs := fifelse(is.na(first_treat_direct), BJS_NEVER,
                                         as.numeric(first_treat_direct))]
+frame_did_direct <- drop_small_cohorts(frame_did_direct, "direct")
 fwrite(frame_did_direct, file.path(data_final, "frame_did_direct.csv"))
 
 cat(sprintf(
@@ -383,21 +418,27 @@ cohort_tab[, n_units := vapply(seq_len(.N), function(i) {
 }, integer(1))]
 cohort_tab[, post_avail := yr_max - cohort]
 cohort_tab[, pre_avail  := cohort - yr_min]
-setcolorder(cohort_tab, c("frame", "cohort", "n_units", "pre_avail", "post_avail"))
+# Flag cohorts below COHORT_MIN: these are dropped entirely from the DiD frames
+# (see drop_small_cohorts above). The table itself documents the FULL structure
+# before the drop, so provenance stays honest.
+cohort_tab[, dropped := n_units < COHORT_MIN]
+setcolorder(cohort_tab,
+            c("frame", "cohort", "n_units", "pre_avail", "post_avail", "dropped"))
 
-cat("\n=== Cohort table ===\n")
+cat("\n=== Cohort table (dropped = below COHORT_MIN) ===\n")
 print(cohort_tab)
 fwrite(cohort_tab, file.path(out_dir, "tab_cohorts.csv"))
 
 # tex via fixest internal helper (no fixest model -> manual)
 tex_path <- file.path(out_dir, "tab_cohorts.tex")
 tex_lines <- c(
-  "\\begin{tabular}{llrrr}",
+  "\\begin{tabular}{llrrrl}",
   "\\hline",
-  "Frame & Cohort & N units & Pre-periods & Post-periods \\\\",
+  "Frame & Cohort & N units & Pre-periods & Post-periods & Dropped \\\\",
   "\\hline",
-  cohort_tab[, sprintf("%s & %d & %d & %d & %d \\\\",
-                       frame, cohort, n_units, pre_avail, post_avail)],
+  cohort_tab[, sprintf("%s & %d & %d & %d & %d & %s \\\\",
+                       frame, cohort, n_units, pre_avail, post_avail,
+                       ifelse(dropped, "yes", "no"))],
   "\\hline",
   "\\end{tabular}"
 )

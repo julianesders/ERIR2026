@@ -52,15 +52,27 @@ OUTCOME_LABELS <- c(
   ice_neuzulassungen_p100k = "ICE new registrations per 100k (placebo)"
 )
 
-# Event-study horizon for plots / aggte. ES_MAX is the *display* default; each
-# downstream script should compute its own data-driven cap (last outcome year
-# minus earliest reachable cohort) via `es_max_data_driven()` below and pass it
-# to aggte() / cap displayed ribbons.
+# Event-study horizon for plots / aggte. ES_MAX is the *display* ceiling; each
+# downstream script computes its own data-driven cap via `es_max_data_driven()`
+# below (largest e supported by >= MIN_COHORTS_PER_E cohorts) and passes it to
+# aggte() / caps displayed ribbons.
 ES_MIN <- -4L
 ES_MAX <-  7L
 
 # Stadtstaaten (n_vze_personal conflates municipal / Länder roles)
 STADTSTAATEN <- c("02", "04", "11")
+
+# Minimum treated units for a cohort to be estimable in CS. Cohorts below this
+# are dropped entirely in 00_prep_analysis.R (singleton/near-singleton cohorts
+# produce rank-deficient within-cohort covariance and unstable DR propensity
+# fits). Applied identically to direct and broad frames.
+COHORT_MIN <- 5L
+
+# Dynamic event-study display horizon rule: max_e is capped at the largest e
+# for which at least this many cohorts still contribute an ATT(g, g+e). Prevents
+# the right tail of the event study from being estimated off one or two cohorts
+# under balance_e = NULL. Lower to 2 for a more permissive tail.
+MIN_COHORTS_PER_E <- 3L
 
 # BJS never-treated coding. didimputation v0.5.1 docs say `0`; we lock it here
 # so 03/04/06 cannot drift apart. The A1 guard in 03_did_main.R verifies the
@@ -76,13 +88,26 @@ BJS_NEVER <- 0  # numeric so fifelse stays double; flip to NA_real_ if A1 trips
 # related to the outcome family and is the wrong control for a flow.
 XFORMLA_CS <- ~ sk_base_z + state_green_base_z + dens_base_z
 
-# Data-driven upper horizon: last outcome year minus earliest reachable cohort.
-# Pass the data.table and a non-NA outcome column.
+# Data-driven upper horizon for aggte(type = "dynamic"). Returns the largest e
+# (>= 1) such that at least MIN_COHORTS_PER_E eligible cohorts have post_avail
+# >= e, given the data's last outcome year. Operates on the SAME data passed to
+# att_gt (i.e. after the COHORT_MIN drop), reading cohorts from gname_col.
+#   - eligible cohorts = unique gname_col values > 0 present in `dat`
+#   - a cohort g contributes to event time e if (yr_max - g) >= e
+# Falls back to 1L if fewer than MIN_COHORTS_PER_E cohorts exist at e = 1.
 es_max_data_driven <- function(dat, yname, gname_col = "gname_cs") {
-  yr_max  <- dat[!is.na(get(yname)), max(year)]
-  g_min   <- dat[get(gname_col) > 0L, min(get(gname_col))]
-  if (!is.finite(yr_max) || !is.finite(g_min)) return(ES_MAX)
-  max(1L, yr_max - g_min)
+  yr_max <- dat[!is.na(get(yname)), max(year)]
+  cohorts <- sort(unique(dat[get(gname_col) > 0L, get(gname_col)]))
+  if (!is.finite(yr_max) || length(cohorts) == 0L) return(1L)
+  post_avail <- yr_max - cohorts                      # vector, one per cohort
+  # for each candidate e, count cohorts with post_avail >= e
+  max_possible <- max(post_avail)
+  if (max_possible < 1L) return(1L)
+  counts <- vapply(seq_len(max_possible),
+                   function(e) sum(post_avail >= e), integer(1))
+  ok <- which(counts >= MIN_COHORTS_PER_E)
+  if (length(ok) == 0L) return(1L)
+  max(1L, max(ok))
 }
 
 # Standard z helper, used after every sample restriction so each model's

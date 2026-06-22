@@ -110,13 +110,12 @@ treat_type          := "direct"          if first_treat_direct notna
 | `log_kaufkraft` | `log(q_kaufkraft)` (fallback log1p if any non-positive) |
 | `bev_{stock,neuzulassungen,corporate,private}_p100k` | KBA counts ÷ xbev × 100,000 |
 | `ice_neuzulassungen_p100k` | `N_benzin_diesel_overall ÷ xbev × 100,000` (placebo) |
-| `eco_index` | PC1 of log1p(`bev_stock_p100k`, `ev_chargepoints_p100k`), fit on year≥2017 only (BNetzA registry pre-2017 under-coverage), sign-flipped to "more is more EV ecosystem"; scored for every row where both inputs are present |
 | `*_imp` | Boolean flag for KBA cells that were linearly interpolated (`limit_area="inside"`) |
 
 #### Lag block
 
 Year-based merge to produce L1/L2/L3 of: `log_steuerkraft`, `log_kaufkraft`,
-`eco_index`, `bev_stock_p100k`, `ev_chargepoints_p100k`,
+`bev_stock_p100k`, `ev_chargepoints_p100k`,
 `{fed,state,muni}_gruene`, `n_vze_personal`, `N_elektro_{overall,private,corporate}`,
 `N_benzin_diesel_overall`, `N_ev_share_*`, plus raw `q_gest_bev`.
 
@@ -193,9 +192,8 @@ estimation sample). `log_dens_z` is a universal control in all columns.
 |---|---|---|
 | (1) | `~ sk_z + bev_z + chg_z + state_gruene_z + log_dens_z` | full |
 | (2) | (1) + `pers_z` | no-Stadtstaaten (drop AGS2 ∈ {02,04,11}) |
-| (3) | `sk_z + eco_z + pers_z + state_gruene_z + log_dens_z` | full |
-| (4) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
-| (5) | (1) replacing `state_gruene_z` with `kreis_funded` | full |
+| (3) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
+| (4) | (1) + `kreis_funded` | full |
 
 #### Outputs
 
@@ -268,16 +266,17 @@ Outputs: `est_att_robust.csv`, `fig_robust_grid.pdf` (forest of ATTs).
 
 | Block | Implementation | Output |
 |---|---|---|
-| Tercile-stratified CS | Split sample on `kk_base_terc` / `sk_base_terc`; rerun CS-dr (never-ctrl) per tercile; report dynamic and simple aggregations | `tab_att_terciles.{tex,csv}`, `fig_att_by_tercile.pdf` |
-| Top–bottom diff (KK)  | Normal-approx CI on `ATT(top) − ATT(bottom)` | `tab_diff_top_bottom_kk.csv` |
+| Tercile-stratified CS | Split sample on `sk_base_terc` (Steuerkraft only; Kaufkraft excluded); rerun CS-dr (never-ctrl) per tercile; report dynamic and simple aggregations | `did_heterogeneity_terciles.{tex,csv}`, `fig_att_by_tercile.pdf` |
+| Top–bottom diff (SK)  | Normal-approx CI on `ATT(top) − ATT(bottom)` | `tab_diff_top_bottom_sk.csv` |
 | Treat-type heterogeneity | CS on broad frame restricted to `treat_type ∈ {direct, never}` vs `{broadcast_only, never}` | `tab_att_treat_type.{tex,csv}` |
 
 ### 4.7 `06_spillovers.R` — Spatial spillovers
 
 | Block | Detail | Output |
 |---|---|---|
-| Donut robustness | Drop never-treated controls with `direct_treated_any_nbrs_gem_1 == 1` OR `broad_treated_any_nbrs_kreis == 1`. Rerun CS-dr main spec | `est_att_donut.csv` |
-| Descriptive ES   | Restrict to never-treated AGS8; pseudo-treatment = first year `direct_treated_any_nbrs_gem_1 == 1`; BJS event study | `es_spillover.pdf`, `es_spillover.csv` |
+| Donut robustness | On the **direct frame**, drop never-treated controls with `direct_treated_any_nbrs_gem_1 == 1` (1st-order Gemeinde neighbour directly treated). Rerun the main direct CS spec (reproduces 03 section A) via shared `_did_helpers.R` | `es_donut.{png,tex,csv}` |
+| Descriptive ES   | Restrict to never-direct-treated AGS8 (direct frame); pseudo-treatment = first year `direct_treated_any_nbrs_gem_1 == 1`; CS event study (CS only; BJS dropped), same machinery/format as the main spec | `es_spillover.{png,tex,csv}` |
+| ATT summary | Overall ATTs for donut + spillover, same schema as `est_att_main.csv` | `est_att_spillover.csv` |
 
 ### 4.8 `07_assemble.R` — Manifest
 
@@ -292,8 +291,8 @@ size, content type. No re-computation.
 |---|---|---|---|
 | `frame_hazard`      | year ≥ 2015, pre-onset only | onset of `first_treat_direct` | 02_hazard.R |
 | `frame_hazard_cov`  | year ≥ 2015, pre-onset only | onset of `first_treat_broad`  | 02_hazard.R (appendix) |
-| `frame_did_broad`   | full panel                  | g-names from `first_treat_broad`  | 03–06 (main, robust, hetero, spillover) |
-| `frame_did_direct`  | drops broadcast-only units  | g-names from `first_treat_direct` | 03_did_main.R (sharp role) |
+| `frame_did_broad`   | full panel                  | g-names from `first_treat_broad`  | 03 (broad main), 05 (heterogeneity) |
+| `frame_did_direct`  | drops broadcast-only units  | g-names from `first_treat_direct` | 03 (direct main + not-yet-treated robustness), 06 (spillovers) |
 
 ---
 
@@ -307,7 +306,6 @@ size, content type. No re-computation.
 | `ev_chargepoints_p100k` | t–1 | `log1p`             | z |
 | `n_vze_personal`  | t–1 | `log1p` (after p100k)     | z (no-Stadtstaaten sample) |
 | `muni/state/fed_gruene` | t–1 (LOCF election) | none | z |
-| `eco_index`       | t–1 | PCA output                | as-is |
 | `log_pop_dens`    | t   | `log`                     | z |
 | `kreis_funded`    | strict past: `1{kreis_funded_year < t}` | dummy | — |
 | DiD baseline covs | snapshot 2014–2016 (per-var earliest) | log1p where applicable | z (cross-section) |

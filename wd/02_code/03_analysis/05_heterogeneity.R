@@ -1,14 +1,15 @@
 # ───────────────────────────────────────────────────────────────────────────────
 # 05_heterogeneity.R   — Inequality payoff
 #
-# CS (dr, never-ctrl, broad frame) estimated within Kaufkraft terciles and
-# Steuerkraft terciles, plus treat_type heterogeneity (direct vs broadcast-
-# only treated units, broad frame).
+# CS (dr, never-ctrl, broad frame) estimated within Steuerkraft (tax capacity)
+# terciles, plus treat_type heterogeneity (direct vs broadcast-only treated
+# units, broad frame). Steuerkraft is the only wealth ranking used; Kaufkraft
+# is deliberately excluded from the DiD heterogeneity.
 #
 # Outputs (04_results/05_heterogeneity/):
-#   tab_att_terciles.{tex,csv}     ATT × tercile × rank
-#   fig_att_by_tercile.pdf         event-studies (facet) + dot-whisker
-#   tab_att_treat_type.{tex,csv}   direct vs broadcast-only ATT
+#   did_heterogeneity_terciles.{tex,csv}    ATT × Steuerkraft tercile
+#   fig_att_by_tercile.pdf                  event-studies (facet) + dot-whisker
+#   did_heterogeneity_treat_type.{tex,csv}  direct vs broadcast-only ATT
 # ───────────────────────────────────────────────────────────────────────────────
 
 library(data.table)
@@ -94,51 +95,55 @@ run_cs_terc <- function(dat, terc_col) {
        es  = rbindlist(es_rows, fill = TRUE))
 }
 
-res_kk <- run_cs_terc(frame_broad, "kk_base_terc")
 res_sk <- run_cs_terc(frame_broad, "sk_base_terc")
 
-terc_dt <- rbindlist(list(
-  res_kk$att[, rank := "kk_base"],
-  res_sk$att[, rank := "sk_base"]
-), fill = TRUE)
+terc_dt <- copy(res_sk$att)[, rank := "sk_base"]
 terc_dt[, ci_lo := att - 1.96 * se]
 terc_dt[, ci_hi := att + 1.96 * se]
-fwrite(terc_dt, file.path(out_dir, "tab_att_terciles.csv"))
+fwrite(terc_dt, file.path(out_dir, "did_heterogeneity_terciles.csv"))
 
-tex_lines <- c(
-  "\\begin{tabular}{llrrrrr}",
-  "\\hline",
-  "Rank & Tercile & N treated & N control & ATT & SE & 95\\% CI \\\\",
-  "\\hline",
-  terc_dt[, sprintf("%s & %d & %d & %d & %.3f & %.3f & [%.3f, %.3f] \\\\",
-                    rank, tercile, n_treated, n_control,
-                    att, se, ci_lo, ci_hi)],
-  "\\hline",
-  "\\end{tabular}"
+write_longtblr(
+  stem        = file.path(out_dir, "did_heterogeneity_terciles"),
+  caption     = "Heterogeneity by Baseline Tax-Capacity Tercile: CS Overall ATT",
+  label       = "tab:did_heterogeneity_terciles",
+  note        = paste0(
+    "Callaway--Sant'Anna (2021) overall ATT (\\texttt{bev\\_neuzulassungen\\_p100k}) ",
+    "estimated separately within each tercile of baseline tax capacity ",
+    "(\\texttt{sk\\_base}, Steuerkraft). ",
+    "Terciles defined on treated + never-treated units; never-treated control group. ",
+    "Broad frame, broad treatment definition. ",
+    "95\\% CI: pointwise 1.96-SE (cluster bootstrap on AGS5, $B=",
+    CS_BITERS, "$)."
+  ),
+  colspec     = "l r r r r r r",
+  header_rows = "Rank & Tercile & $N_{\\text{treated}}$ & $N_{\\text{control}}$ & ATT & SE & 95\\% CI \\\\",
+  body_rows   = terc_dt[, sprintf(
+    "%s & %d & %d & %d & %.3f & %.3f & [%.3f,\\,%.3f] \\\\",
+    rank, tercile, n_treated, n_control, att, se, ci_lo, ci_hi)],
+  footer_rows = character(0)
 )
-writeLines(tex_lines, file.path(out_dir, "tab_att_terciles.tex"))
 
-# Bootstrap difference top vs bottom tercile (kk): rerun with cluster bootstrap
-# Heuristic — use the SE-based normal approx for now; full bootstrap optional.
-diff_kk <- if (nrow(res_kk$att) >= 2L) {
-  hi <- res_kk$att[tercile == max(tercile)]
-  lo <- res_kk$att[tercile == min(tercile)]
+# Difference top vs bottom tercile (sk): SE-based normal approx (independence
+# across split-sample bootstraps); full split-sample bootstrap optional.
+diff_sk <- if (nrow(res_sk$att) >= 2L) {
+  hi <- res_sk$att[tercile == max(tercile)]
+  lo <- res_sk$att[tercile == min(tercile)]
   data.table(
-    rank = "kk_base",
+    rank = "sk_base",
     diff = hi$att - lo$att,
     se   = sqrt(hi$se^2 + lo$se^2)
   )[, ci_lo := diff - 1.96 * se][, ci_hi := diff + 1.96 * se][]
 } else NULL
-if (!is.null(diff_kk))
-  fwrite(diff_kk, file.path(out_dir, "tab_diff_top_bottom_kk.csv"))
+if (!is.null(diff_sk))
+  fwrite(diff_sk, file.path(out_dir, "tab_diff_top_bottom_sk.csv"))
 
-# -- Figure: event-studies (facet by tercile) + dot-whisker (kk) --------------
+# -- Figure: event-studies (facet by Steuerkraft tercile) ---------------------
 
-if (nrow(res_kk$es) > 0L) {
-  es_dt <- copy(res_kk$es)
+if (nrow(res_sk$es) > 0L) {
+  es_dt <- copy(res_sk$es)
   es_dt[, ci_lo := att - 1.96 * se]
   es_dt[, ci_hi := att + 1.96 * se]
-  es_dt[, facet := sprintf("kk tercile %d", tercile)]
+  es_dt[, facet := sprintf("sk tercile %d", tercile)]
   p_es <- ggplot(es_dt, aes(x = e, y = att)) +
     geom_hline(yintercept = 0, color = "grey50", linewidth = 0.4) +
     geom_vline(xintercept = -0.5, linetype = "dashed",
@@ -193,19 +198,30 @@ tt_dt <- rbindlist(list(
 ), fill = TRUE)
 if (nrow(tt_dt)) {
   tt_dt[, ci_lo := att - 1.96 * se][, ci_hi := att + 1.96 * se]
-  fwrite(tt_dt, file.path(out_dir, "tab_att_treat_type.csv"))
-  tex_lines <- c(
-    "\\begin{tabular}{lrrrrrr}",
-    "\\hline",
-    "Treated subset & N treated & N control & ATT & SE & 95\\% CI \\\\",
-    "\\hline",
-    tt_dt[, sprintf("%s & %d & %d & %.3f & %.3f & [%.3f, %.3f] \\\\",
-                    treated_subset, n_treated, n_control,
-                    att, se, ci_lo, ci_hi)],
-    "\\hline",
-    "\\end{tabular}"
+  fwrite(tt_dt, file.path(out_dir, "did_heterogeneity_treat_type.csv"))
+  write_longtblr(
+    stem        = file.path(out_dir, "did_heterogeneity_treat_type"),
+    caption     = "Heterogeneity by Treatment Type: Direct vs Broadcast-only",
+    label       = "tab:did_heterogeneity_treat_type",
+    note        = paste0(
+      "Callaway--Sant'Anna (2021) overall ATT (\\texttt{bev\\_neuzulassungen\\_p100k}) ",
+      "estimated on the broad frame restricted by treated subset: ",
+      "``direct only'' keeps \\texttt{treat\\_type\\,=\\,direct} as treated ",
+      "(municipalities with their own EMK project); ",
+      "``broadcast only'' keeps \\texttt{treat\\_type\\,=\\,broadcast\\_only} ",
+      "(covered by a county-level project but no own project). ",
+      "In both cases the never-treated pool is unchanged. ",
+      "Unconditional parallel trends, never-treated control group. ",
+      "95\\% CI: pointwise 1.96-SE (cluster bootstrap on AGS5, $B=",
+      CS_BITERS, "$)."
+    ),
+    colspec     = "l r r r r r",
+    header_rows = "Treated subset & $N_{\\text{treated}}$ & $N_{\\text{control}}$ & ATT & SE & 95\\% CI \\\\",
+    body_rows   = tt_dt[, sprintf(
+      "%s & %d & %d & %.3f & %.3f & [%.3f,\\,%.3f] \\\\",
+      treated_subset, n_treated, n_control, att, se, ci_lo, ci_hi)],
+    footer_rows = character(0)
   )
-  writeLines(tex_lines, file.path(out_dir, "tab_att_treat_type.tex"))
 }
 
 cat(sprintf("\nHeterogeneity outputs -> %s\n", out_dir))

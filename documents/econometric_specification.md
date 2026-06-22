@@ -194,8 +194,7 @@ the patterns in Part (ii).
 Both frames carry the time-invariant baseline snapshot $W_i$ (see §3.4) and
 the spatial-neighbour columns from `01_spatial_weights_ags8.py`.
 
-**Two data-quality filters are applied in `00_prep_analysis.R` before the
-frames are saved:**
+**Filters applied in `00_prep_analysis.R` before the frames are saved:**
 
 1. **Drop `xbev < 500`.** KBA registers vehicles at the holder's HQ AGS8;
    *Großkunden-Halter* (leasing companies headquartered in tiny Gemeinden)
@@ -207,6 +206,17 @@ frames are saved:**
    remaining fleet-registration artifacts at larger Gemeinden while
    preserving substantively important variation in the body of the
    distribution. Applied to all `bev_*_p100k` and `ice_neuzulassungen_p100k`.
+3. **Drop small cohorts (`COHORT_MIN = 5`).** Cohorts with fewer than 5
+   treated units are removed **entirely** from the DiD frames (not
+   reclassified as controls), applied per-frame because direct and broad have
+   different cohort sizes. One-unit cohorts cannot support within-cohort
+   variance, so CS's per-$(g,t)$ 2×2 (and the DR within-cohort propensity
+   score) become rank-deficient and produce unstable pre-tests and
+   simultaneous bands. For the current data this removes the direct cohorts
+   {2018, 2020, 2021, 2023} (survivors {2016, 2017, 2019, 2022}) and the broad
+   singleton cohorts {2020, 2023}. The never-treated pool is unchanged. The
+   cohort table (`tab_cohorts.{csv,tex}`) is written *before* the drop and
+   carries a `dropped` flag.
 
 For the CS package, $g_i$ is coded as 0 for never-treated. Unit ID is
 `ags8_id` (integer .GRP of AGS8).
@@ -237,22 +247,31 @@ where $D_g = \mathbf{1}\{g_i = g\}$, $\Delta Y_{i,t,g} = Y_{it} - Y_{i,g-1}$
 $W$ in the control group. The "doubly robust" property: consistent if EITHER
 the propensity score OR the outcome regression is correctly specified.
 
+For the conditional specifications we run **both** estimators: outcome
+regression (`est_method = "reg"`) and doubly robust (`est_method = "dr"`). The
+main table reports the unconditional and conditional-`reg` columns; the
+conditional-`dr` column is an appendix twin. The **unconditional** column
+(`xformla = NULL`) is estimator-invariant (`reg` ≡ `dr`) and is reported
+once.
+
 ### 3.3 Design grid (in `03_did_main.R`)
 
-| Section | Frame | Control | xformla | Files |
+| Section | Frame | Control | Columns | Files |
 |---|---|---|---|---|
-| A (main, baseline) | direct | never-treated | NULL / XFORMLA_CS | `es_main_direct.*` |
-| B (main, broad)    | broad  | never-treated | NULL / XFORMLA_CS | `es_main_broad.*`  |
-| C (robustness)     | direct (ever-treated only) | not-yet-treated | NULL / XFORMLA_CS | `es_robust_notyet.*` |
-| D – F (secondary)  | direct | never-treated | NULL | `es_{corp,priv,ice}.*` |
+| A (main, baseline) | direct | never-treated | uncond / cond(reg) / cond(dr) | `es_main_direct.*` (+ `_dr`) |
+| B (main, broad)    | broad  | never-treated | uncond / cond(reg) / cond(dr) | `es_main_broad.*` (+ `_dr`) |
+| C (robustness)     | direct (ever-treated only) | not-yet-treated | uncond / reg / dr | `es_robust_notyet.*` (+ `_dr`) |
+| D – F (secondary)  | direct | never-treated | uncond | `es_{corp,priv,ice}.*` |
 
-Sections A and B each produce two table columns: *Unconditional*
-(`xformla = NULL`) and *Conditional* (`xformla = XFORMLA_CS`). The
-unconditional column is the primary report; the conditional column is
-included as an in-table comparison to highlight sensitivity to covariate
-adjustment. Sections D–F run the main (unconditional, direct-frame) spec on
-corporate BEV, private BEV, and ICE registrations respectively. ICE serves
-as a pure placebo.
+Sections A, B and C each estimate three columns: *Unconditional*
+(`xformla = NULL`), *Conditional (reg)* and *Conditional (dr)* (both
+`xformla = XFORMLA_CS`). The **main table** displays Unconditional +
+Conditional (reg); the **appendix twin** (`*_dr.{tex,csv}`) displays
+Conditional (dr). The event-study figure shows all three columns side by side;
+the main `.csv` carries the union of all estimated columns. The unconditional
+column is the primary report. Sections D–F run the main (unconditional,
+direct-frame) spec on corporate BEV, private BEV, and ICE registrations
+respectively. ICE serves as a pure placebo.
 
 ### 3.4 Baseline covariates $W_i$ (CS-dr only)
 
@@ -306,13 +325,21 @@ $$
 $$
 
 $$
-\text{ATT}^{\text{dynamic}}(e) = \mathbb{E}_g\bigl[\text{ATT}(g, g+e)\bigr], \quad e \in [-4, 4]
+\text{ATT}^{\text{dynamic}}(e) = \mathbb{E}_g\bigl[\text{ATT}(g, g+e)\bigr], \quad e \in [\text{ES\_MIN}, \text{max\_e}]
 $$
 
 Implemented as `aggte(type = "simple")` and `aggte(type = "dynamic",
-min_e = -4, max_e = 4, balance_e = NULL, cband = TRUE)`. The dynamic
+min_e = ES_MIN, max_e = max_e, balance_e = NULL, cband = TRUE)`. The dynamic
 aggregation does **not** balance event time (composition changes across
 $e$ are noted in captions).
+
+The upper horizon `max_e` is **data-driven** (`es_max_data_driven()`): the
+largest event time $e$ for which at least `MIN_COHORTS_PER_E` ($= 3$) eligible
+cohorts still contribute an $\text{ATT}(g, g+e)$, evaluated on the post-drop
+frame. This caps the right tail at the horizon where the displayed estimate is
+still backed by several cohorts rather than a single surviving one. For the
+direct frame post-drop (cohorts {2016, 2017, 2019, 2022}, last year 2023) this
+evaluates to $\text{max\_e} = 4$.
 
 ### 3.7 Inference
 
@@ -329,11 +356,24 @@ from the multiplier bootstrap percentiles; pointwise 95% bands use 1.96.
 
 ### 3.8 Pre-trend evidence
 
-- **CS Wald test**: $W = \widehat{\theta}_{\text{pre}}'\,\widehat V_{\text{pre}}^{-1}\,\widehat{\theta}_{\text{pre}}$
-  over pre-treatment $\text{ATT}(g,t)$ at $t < g$. Covariance $\widehat V_{\text{pre}}$
-  is computed from the multiplier bootstrap influence functions stored in
-  `es_agg$inf.func.egt`. $W \sim \chi^2(K_{\text{pre}})$ under $H_0$.
-  Reported at the bottom of every event-study table.
+- **CS joint Wald test**: the joint Wald of $H_0$ that all *pre-treatment*
+  $\text{ATT}(g,t)$ ($t < g$) equal zero. This is computed inside
+  `did::att_gt` with the AGS5-clustered multiplier bootstrap and exposed on the
+  `MP` object as `cs$W` (statistic) and `cs$Wpval` (p-value) — the same number
+  the package prints as "P-value for pre-test of parallel trends assumption",
+  with $\text{Wpval} = \Pr[\chi^2_{K} > W]$ and $K =$ number of pre-treatment
+  $(g,t)$ cells. We report **that** statistic. We deliberately do **not**
+  hand-roll a Wald from the stored event-study influence function
+  (`aggte`'s `inf.function$dynamic.inf.func.e`): its raw cross-product
+  covariance does not reproduce the clustered bootstrap SEs (it is roughly two
+  orders of magnitude too small) and would be wildly anti-conservative. The
+  table shows `--` for the $\chi^2$, df and $p$-value when the statistic is
+  unavailable; there is **no** diagonal sum-of-squared-$t$ fallback. The CSV
+  twin records `pre_test_method` (`joint_wald`, `unavailable`, or
+  `no_pre_periods`) so each row's source is auditable.
+- The pre-test is on the group-time pre-cells, not the event-study
+  $e < 0$ aggregation; the plotted pre-period leads and their simultaneous
+  bands give the complementary event-time-resolved evidence.
 
 ### 3.9 Identification assumptions (Part ii)
 
@@ -356,12 +396,16 @@ For CS-dr with never-treated control and main / sharp roles:
 `04_did_robustness.R` has been deleted. The primary robustness check is
 section C of `03_did_main.R`:
 
-| Variant | Frame | Sample | xformla | Control |
-|---|---|---|---|---|
-| Not-yet-treated (uncond.) | direct | ever-treated only | NULL | notyettreated |
-| Not-yet-treated (cond.)   | direct | ever-treated only | XFORMLA_CS | notyettreated |
+| Variant | Frame | Sample | xformla | est_method | Control |
+|---|---|---|---|---|---|
+| Not-yet-treated (uncond.) | direct | ever-treated only | NULL | reg | notyettreated |
+| Not-yet-treated (reg)     | direct | ever-treated only | XFORMLA_CS | reg | notyettreated |
+| Not-yet-treated (dr)      | direct | ever-treated only | XFORMLA_CS | dr | notyettreated |
 
-Using the not-yet-treated control probes whether results are driven by
+The uncond + reg columns are in the main robustness table
+(`es_robust_notyet.{tex,csv}`); the dr column is the appendix twin
+(`es_robust_notyet_dr.{tex,csv}`). Using the not-yet-treated control probes
+whether results are driven by
 selection into the never-treated pool (Roth–Sant'Anna concern). The
 ever-treated-only sample ensures the comparison pool consists exclusively of
 cohorts not yet treated at each calendar period.
@@ -371,17 +415,18 @@ cohorts not yet treated at each calendar period.
 ## 4. Heterogeneity (`05_heterogeneity.R`)
 
 Sample-split CS-dr (broad frame, never-treated control) within unweighted
-terciles of $W_i$. For each baseline rank $r \in \{\text{kk\_base}, \text{sk\_base}\}$
-and each tercile $\tau \in \{1, 2, 3\}$, estimate
+terciles of baseline **tax capacity** ($\text{sk\_base}$, Steuerkraft) — the
+only wealth ranking used; Kaufkraft is deliberately excluded from the DiD
+heterogeneity. For each tercile $\tau \in \{1, 2, 3\}$, estimate
 
 $$
-\text{ATT}^{r,\tau} = \frac{\sum N_g\, \text{ATT}(g, t \mid \tau_i = \tau)}{\sum N_g}
+\text{ATT}^{\tau} = \frac{\sum N_g\, \text{ATT}(g, t \mid \tau_i = \tau)}{\sum N_g}
 $$
 
 both as simple aggregation and dynamic event study. Difference of top vs
-bottom tercile $\Delta = \text{ATT}^{r,3} - \text{ATT}^{r,1}$ is reported
+bottom tercile $\Delta = \text{ATT}^{3} - \text{ATT}^{1}$ is reported
 with a normal-approximation CI (independence assumption across split-sample
-bootstraps).
+bootstraps), in `tab_diff_top_bottom_sk.csv`.
 
 Treat-type heterogeneity: restrict the broad frame to
 $\{$direct, never$\}$ and to $\{$broadcast-only, never$\}$ and compare the
@@ -398,20 +443,30 @@ Spatial structure from `01_spatial_weights_ags8.py`:
 - **Aggregated**: AGS5 queen contiguity (after polygon dissolve);
   treated-neighbour indicator uses $g_i^{\text{broad}}$.
 
-### 5.1 Donut robustness
+Both spillover probes operate on the **direct frame** (sharp Gemeinde-level
+treatment $g_i^{\text{dir}}$). The broad frame is not used: broad treatment is
+Kreis-level coverage and does not map onto Gemeinde adjacency, so an
+adjacency-based spillover/donut on the broad frame is mechanically incoherent.
 
-Re-estimate the main CS-dr spec after dropping never-treated controls $i$
-with $\text{direct\_treated\_any\_nbrs\_gem\_1}_{it} = 1$ OR
-$\text{broad\_treated\_any\_nbrs\_kreis}_{it} = 1$. If the headline ATT
-survives, contamination of "never-treated" controls by nearby treatment is
-unlikely to drive the result.
+Re-estimate the main direct spec (direct frame, never-treated control,
+unconditional CS — it reproduces `03_did_main.R` section A exactly on the full
+frame) after dropping never-treated controls $i$ with
+$\text{direct\_treated\_any\_nbrs\_gem\_1}_{it} = 1$, i.e. whose 1st-order
+Gemeinde neighbour was directly treated. If the headline ATT survives,
+contamination of "never-treated" controls by nearby treatment is unlikely to
+drive the result. (Realised: the donut drops $\approx 1{,}028$ controls,
+retains $\approx 6{,}064$, and the simple ATT moves from 30.6 to 34.3 per 100k
+— the effect survives.)
 
 ### 5.2 Descriptive spillover event study
 
-Restrict to never-treated AGS8 only. Pseudo-cohort
-$\tilde g_i = \min\{t : \text{direct\_treated\_any\_nbrs\_gem\_1}_{it} = 1\}$.
-BJS event study on the BEV outcome with this pseudo-treatment. Plotted as
-$\widehat\tau_e$ in $e \in [-4, 4]$.
+Restrict to never-direct-treated AGS8 only (direct frame). Pseudo-cohort
+$\tilde g_i = \min\{t : \text{direct\_treated\_any\_nbrs\_gem\_1}_{it} = 1\}$;
+never-pseudo-treated units (no neighbour ever directly treated) are the control
+group. CS event study (CS only — BJS was dropped pipeline-wide) on the BEV
+outcome with this pseudo-treatment, dynamic aggregation with simultaneous
+bands. Plotted as $\widehat{\text{ATT}}(e)$ over $e \in [\text{ES\_MIN},
+\text{max\_e}]$ with the same data-driven horizon rule as the main DiD.
 
 Caveat: the pseudo-cohort is endogenous to spatial-economic geography. The
 event study is descriptive only — selection-on-geography rules out a
@@ -444,6 +499,12 @@ Baseline covariates $W_i$ are $z$-scored on the AGS8 cross-section once
 | `frame_did_broad`                                  | full panel | 10,775 | ever-treated: 1,827 |
 | `frame_did_direct`                                 | drops broadcast-only | $\approx$ 8,948 + 167 | 167 |
 | Cohorts (broad)                                    | 2015–2022 (varying counts) | — | — |
+
+Note: the ever-treated counts above are *pre* COHORT_MIN drop. After dropping
+cohorts with `< 5` treated units (§3.1), the direct DiD frame retains
+$\approx 161$ ever-treated units across 4 cohorts ({2016, 2017, 2019, 2022});
+the broad frame loses its two singleton cohorts ({2020, 2023}). The
+never-treated control pool is unchanged.
 
 ---
 

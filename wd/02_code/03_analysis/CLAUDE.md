@@ -34,7 +34,9 @@ For long-form rationale: `documents/econometric_specification.md`.
    (`04_did_robustness.R` was deleted; robustness lives in `03_did_main.R`)
 4. `07_assemble.R` — gathers everything into a manifest
 
-`_dict.R` is sourced from every script; never run on its own.
+`_dict.R` is sourced from every script; never run on its own. `_did_helpers.R`
+(shared CS estimation + output machinery) is sourced by `03_did_main.R` and
+`06_spillovers.R`; also never run on its own.
 
 ## Frames built by `00_prep_analysis.R`
 
@@ -60,7 +62,16 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
   model (the one with `pers_z`) because the city-state structure conflates
   municipal/Länder roles. All other specs keep them.
 - `ES_MIN = -4L`, `ES_MAX = 7L`; `es_max_data_driven(dat, yname)` gives the
-  per-frame cap = last outcome year minus earliest reachable cohort.
+  per-frame display cap = the largest event time `e` for which at least
+  `MIN_COHORTS_PER_E` eligible cohorts still contribute an `ATT(g, g+e)`,
+  computed on the post-drop frame (no longer `last_year − earliest_cohort`).
+- `COHORT_MIN = 5L`: cohorts with fewer than 5 treated units are dropped
+  *entirely* from the DiD frames in `00_prep_analysis.R` — singleton /
+  near-singleton cohorts give rank-deficient within-cohort covariance and
+  unstable DR propensity fits.
+- `MIN_COHORTS_PER_E = 3L`: cohort-count floor used by `es_max_data_driven()`
+  to cap the dynamic event-study horizon (lower to 2 for a more permissive
+  right tail).
 - `XFORMLA_CS = ~ sk_base_z + state_green_base_z + dens_base_z`. Three
   baseline z-covariates for the conditional CS variant. Order matches output
   tables: tax capacity | state Green vote share | log pop. density. Baseline
@@ -82,6 +93,27 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
 - `write_estimates_csv(models, file)`: writes a long-form CSV of
   estimate/SE/CI for every model in the list.
 
+### `_did_helpers.R` — shared CS estimation + output machinery
+
+Sourced by **both** `03_did_main.R` and `06_spillovers.R` (after `_dict.R`), so
+every CS event study — main or spillover — produces the same-format figure,
+table and CSV; only the estimation sample differs. Definitions only, no
+top-level estimation. Contents:
+
+- Constants: `CS_BITERS = 2000L`, `OUTCOME_{BEV,CORP,PRIV,ICE}`, `COL_LABELS`
+  (column key → display label, incl. `donut` / `spillover`), plot theme
+  (`PLOT_BLUE`, `PLOT_FILL`, `theme_es`), `.read_frame`.
+- `run_cs(yname, dat, xformla, control_group, est_method, gname)`: the
+  `att_gt` call. `gname` defaults to `"gname_cs"`; pass a different cohort
+  column (e.g. a pseudo-treatment) to reuse the machinery on another design.
+- `cs_es_agg` / `cs_att_agg` / `cs_pre_test`: dynamic + simple aggregations and
+  the joint-Wald pre-test (`cs$W`/`cs$Wpval`).
+- `run_spec(dat, yname, xformla, control_group, est_method, label, gname)`:
+  one estimation cell → `{es_agg, att_agg, pre_tst, n_treated, n_control}`.
+- `es_graph` (ragg PNG, simultaneous bands), `write_es_longtblr` (longtblr +
+  CSV twin), `.att_row` (summary row), `emit_section` (figure + main table +
+  optional dr appendix twin).
+
 ### `00_prep_analysis.R`
 
 - Loads `emk_inkar_panel_ags8.csv` + spatial neighbours.
@@ -93,7 +125,17 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
 - Builds `base_dt` (per-AGS8 baseline snapshot, earliest year in 2014-2016);
   z-scores the columns; falls back to `state_gruene` baseline where
   `muni_gruene` is missing.
-- Writes the six estimation frames and a cohort table.
+- **Drops small cohorts (`< COHORT_MIN`) from each DiD frame independently**
+  (direct and broad have different cohort sizes). Units in dropped cohorts
+  are removed entirely (their rows have `gname_cs > 0`, so the never-treated
+  pool is untouched; they are NOT reclassified as controls). Logs the dropped
+  cohort years/units/rows and asserts `gname_bjs` stays in sync with
+  `gname_cs`. For the current data this removes direct cohorts
+  {2018, 2020, 2021, 2023} (survivors {2016, 2017, 2019, 2022}) and broad
+  singletons {2020, 2023}.
+- Writes the six estimation frames and a cohort table. The cohort table is
+  built *before* the drop (documents the full structure) and carries a
+  `dropped` boolean flagging cohorts below `COHORT_MIN`.
 
 ### `01_descriptives.R`
 
@@ -182,34 +224,56 @@ Outputs in `04_results/02b_logit_uncensored/`:
 
 ### `03_did_main.R` — all DiD estimates
 
-**Callaway-Sant'Anna (CS)** estimator (`did::att_gt`, `est_method = "dr"`).
-Bootstrap: multiplier, `CS_BITERS = 2000L`, clustered on AGS5.
-Event-study simultaneous bands: `cband = TRUE` in `aggte()`.
+**Callaway-Sant'Anna (CS)** estimator (`did::att_gt`); `est_method` is
+threaded per spec. Bootstrap: multiplier, `CS_BITERS = 2000L`, clustered on
+AGS5. Event-study simultaneous bands: `cband = TRUE` in `aggte()` (pointwise
+1.96 fallback when the simultaneous critical value is unavailable).
 `allow_unbalanced_panel = TRUE`.
 
 **Primary outcome:** `bev_neuzulassungen_p100k` (level only; winsorised).
-**Two specs per frame:** unconditional (`xformla = NULL`) and conditional
-(`xformla = XFORMLA_CS`), producing side-by-side columns in each table.
+**Three specs per main frame:** unconditional (`xformla = NULL`,
+estimator-invariant — reg ≡ dr, reported once) and conditional
+(`xformla = XFORMLA_CS`) run with **both** `est_method = "reg"` (outcome
+regression) and `est_method = "dr"` (doubly robust). The **main table** shows
+*Unconditional + Conditional (reg)*; the **appendix twin** (`*_dr.{tex,csv}`)
+shows *Conditional (dr)*. The event-study **figure** shows all three columns.
+The main `.csv` is the union of all estimated columns (no estimate lost to the
+display split). A `dr` overlap diagnostic prints treated-N per surviving cohort
+for every `dr` conditional cell and warns when a contributing cohort has `< 10`
+treated.
 
 **Sections:**
 
-| Section | Frame | Control | Outcomes | Files |
+| Section | Frame | Control | Columns | Files |
 |---|---|---|---|---|
-| A Main | direct | nevertreated | BEV overall | `es_main_direct.*` |
-| B Main | broad | nevertreated | BEV overall | `es_main_broad.*` |
-| C Robustness | direct (ever-treated only) | notyettreated | BEV overall | `es_robust_notyet.*` |
-| D | direct | nevertreated | Corporate BEV | `es_corp.*` |
-| E | direct | nevertreated | Private BEV | `es_priv.*` |
-| F | direct | nevertreated | ICE (placebo) | `es_ice.*` |
+| A Main | direct | nevertreated | uncond, cond(reg), cond(dr) | `es_main_direct.*`, `es_main_direct_dr.*` |
+| B Main | broad | nevertreated | uncond, cond(reg), cond(dr) | `es_main_broad.*`, `es_main_broad_dr.*` |
+| C Robustness | direct (ever-treated only) | notyettreated | uncond, reg, dr | `es_robust_notyet.*`, `es_robust_notyet_dr.*` |
+| D | direct | nevertreated | Corporate BEV (uncond) | `es_corp.*` |
+| E | direct | nevertreated | Private BEV (uncond) | `es_priv.*` |
+| F | direct | nevertreated | ICE placebo (uncond) | `es_ice.*` |
 
-Each section produces: `<stem>.png` (event-study graph, simultaneous CI, 300 dpi via ragg),
-`<stem>.tex` (longtblr event-study table, appendix), `<stem>.csv` (twin).
-Plus `est_att_main.csv` (all overall ATTs).
+Each section produces: `<stem>.png` (event-study graph, all estimable columns,
+simultaneous CI, 300 dpi via ragg), `<stem>.tex` (longtblr event-study table),
+`<stem>.csv` (twin). Conditional sections also produce the `<stem>_dr.{tex,csv}`
+appendix twin. Plus `est_att_main.csv` — one row per estimated cell with an
+`est_method` column (uncond rows appear once, not duplicated reg/dr).
 
-**Pre-treatment test:** Wald χ² on joint pre-period ATTs, covariance from
-bootstrap influence functions, reported at the bottom of each table.
+**Pre-treatment test:** the `did` package's own joint Wald χ² of H₀ that all
+pre-treatment ATT(g,t) = 0 (`cs$W` / `cs$Wpval`, AGS5-clustered multiplier
+bootstrap; df = number of pre-treatment (g,t) cells). Reported as `--` when
+unavailable — **no** hand-rolled statistic from the stored event-study
+influence function (its raw covariance is ~2 orders of magnitude too small to
+reproduce the clustered SEs) and **no** diagonal-sum-of-squares fallback. The
+CSV records `pre_test_method` (`joint_wald` / `unavailable` / `no_pre_periods`)
+so each row's source is auditable.
 
-**A1 guard:** verifies never-treated sample > 50% of rows and > 1000 units.
+**Display horizon:** `es_max_data_driven()` caps `max_e` at the largest `e`
+supported by `≥ MIN_COHORTS_PER_E` cohorts (evaluates to 4 for the direct
+frame post-drop at the default `MIN_COHORTS_PER_E = 3`).
+
+**A1 guard:** verifies the (post-drop) estimation sample has never-treated
+> 50% of rows and > 1000 units.
 
 **`04_did_robustness.R` has been deleted** — its content is now fully
 contained in section C of `03_did_main.R`.
@@ -217,24 +281,47 @@ contained in section C of `03_did_main.R`.
 ### `05_heterogeneity.R`
 
 Tercile-stratified CS on `bev_neuzulassungen_p100k`. Splits treated and
-control units by `kk_base_terc` (Kaufkraft, headline) and `sk_base_terc`
-(Steuerkraft, appendix). Plus treat-type heterogeneity on the broad frame.
-Uses unconditional CS to match the headline spec.
+control units by `sk_base_terc` (Steuerkraft / tax capacity) — the **only**
+wealth ranking; Kaufkraft is deliberately excluded from the DiD heterogeneity.
+Plus treat-type heterogeneity on the broad frame. Uses unconditional CS to
+match the headline spec.
 
 Outputs via `write_longtblr()`:
 - `did_heterogeneity_terciles.{tex,csv}`
+- `tab_diff_top_bottom_sk.csv` (top–bottom Steuerkraft tercile difference)
 - `did_heterogeneity_treat_type.{tex,csv}`
 
 ### `06_spillovers.R`
 
-Two SUTVA probes on the broad frame:
+Two SUTVA probes on the **direct frame** (sharp Gemeinde-level treatment —
+adjacency-based spillover is mechanically coherent there; the broad frame is
+not used for spillovers because broad treatment is Kreis-level coverage and
+does not map onto Gemeinde adjacency):
 
-1. **Donut:** rerun the headline CS after dropping never-treated controls
-   flagged by `emk_absorbing_any_nbrs_1 == 1L`. Survival of the headline ATT
-   indicates control contamination isn't driving it.
-2. **Descriptive spillover ES:** among never-treated only, pseudo-treatment
-   = first year a 1st-order neighbour appears as treated; BJS event study.
-   Descriptive only — selection-on-geography caveat; never reported as causal.
+1. **Donut:** rerun the headline direct CS (direct frame, never-treated control,
+   unconditional — replicates `03_did_main.R` section A exactly on the full
+   frame) after dropping never-treated controls whose 1st-order Gemeinde
+   neighbour was directly treated (`direct_treated_any_nbrs_gem_1 == 1L`).
+   Survival of the headline ATT indicates control contamination isn't driving
+   it. (Realised: drops ≈1,028 controls, keeps ≈6,064; simple ATT 30.6 → 34.3
+   per 100k — effect survives.)
+2. **Descriptive spillover ES:** among never-direct-treated only,
+   pseudo-treatment = first year a 1st-order Gemeinde neighbour appears as
+   directly treated (`direct_treated_any_nbrs_gem_1`); **CS** event study
+   (CS only — BJS was dropped pipeline-wide), dynamic aggregation with
+   simultaneous bands. Descriptive only — selection-on-geography caveat;
+   never reported as causal.
+
+Both probes run through the **shared CS machinery** in `_did_helpers.R`
+(`run_spec` → `emit_section`), so their outputs are byte-identical in format to
+the main DiD sections — only the sample differs. Outputs in
+`04_results/06_spillovers/`:
+
+| Stem | Content |
+|---|---|
+| `es_donut.{png,tex,csv}`     | Donut event study (single column, main-spec format) |
+| `es_spillover.{png,tex,csv}` | Descriptive spillover event study (same format) |
+| `est_att_spillover.csv`      | Overall ATTs (same schema as `est_att_main.csv`) |
 
 ### `07_assemble.R`
 
