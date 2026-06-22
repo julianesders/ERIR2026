@@ -4,32 +4,32 @@
 # Variable labels for etable / modelsummary
 dict <- c(
   # IDs / FEs
-  AGS8 = "AGS8 (Gemeinde)",
-  AGS5 = "AGS5 (Kreis)",
-  AGS2 = "AGS2 (Bundesland)",
+  AGS8 = "AGS8 (Municipality)",
+  AGS5 = "AGS5 (County)",
+  AGS2 = "AGS2 (State)",
   year = "Year",
 
   # Hazard channels (lagged, z-scored on estimation sample)
   log_dens_z      = "Log pop. density (z)",
   log_dens        = "Log pop. density",
-  sk_z            = "log1p Steuerkraft (z, L1)",
-  kk_z            = "Log Kaufkraft (z, L1)",
+  sk_z            = "log1p Tax capacity (z, L1)",
+  kk_z            = "Log Purchasing power (z, L1)",
   bev_z           = "log1p BEV stock p100k (z, L1)",
   chg_z           = "log1p Charging pts p100k (z, L1)",
-  pers_z          = "log1p Personnel VZE p100k (z, L1)",
-  muni_gruene_z   = "Muni Grüne share (z, L1)",
-  state_gruene_z  = "State Grüne share (z, L1)",
-  fed_gruene_z    = "Fed Grüne share (z, L1)",
-  eco_index_L1    = "EV ecosystem index (PCA, L1)",
-  kreis_funded    = "Kreis-funded (strict past)",
+  pers_z          = "log1p Personnel FTE p100k (z, L1)",
+  muni_gruene_z   = "Muni Green share (z, L1)",
+  state_gruene_z  = "State Green share (z, L1)",
+  fed_gruene_z    = "Fed Green share (z, L1)",
+  kreis_funded    = "County-funded (strict past)",
 
   # Baseline snapshot z-scores (DiD covariates)
-  kk_base_z    = "Baseline log Kaufkraft (z)",
-  sk_base_z    = "Baseline log Steuerkraft (z)",
-  dens_base_z  = "Baseline log pop. density (z)",
-  green_base_z = "Baseline muni Grüne share (z)",
-  bev_base_z   = "Baseline log1p BEV stock p100k (z)",
-  chg_base_z   = "Baseline log1p Charging pts p100k (z)",
+  kk_base_z          = "Baseline log purchasing power (z)",
+  sk_base_z          = "Baseline log tax capacity (z)",
+  dens_base_z        = "Baseline log pop. density (z)",
+  green_base_z       = "Baseline muni Green share (z)",
+  state_green_base_z = "Baseline state Green share (z)",
+  bev_base_z         = "Baseline log1p BEV stock p100k (z)",
+  chg_base_z         = "Baseline log1p Charging pts p100k (z)",
 
   # Events
   onset_direct = "Direct-treatment onset",
@@ -74,7 +74,7 @@ BJS_NEVER <- 0  # numeric so fifelse stays double; flip to NA_real_ if A1 trips
 # collapse to a near-constant column inside small (g,t) cells and trigger
 # singular-matrix errors in the DR fit; (b) baseline outcome is mechanically
 # related to the outcome family and is the wrong control for a flow.
-XFORMLA_CS <- ~ kk_base_z + sk_base_z + dens_base_z + green_base_z
+XFORMLA_CS <- ~ sk_base_z + state_green_base_z + dens_base_z
 
 # Data-driven upper horizon: last outcome year minus earliest reachable cohort.
 # Pass the data.table and a non-NA outcome column.
@@ -143,4 +143,111 @@ results_dir <- function(root, stem) {
   d <- file.path(root, "04_results", stem)
   dir.create(d, showWarnings = FALSE, recursive = TRUE)
   d
+}
+
+# ── Table writers ──────────────────────────────────────────────────────────────
+
+# Core longtblr writer (tabularray package). All regression/effect and
+# descriptive tables use this format. `note{}` (empty key) produces an
+# unnumbered footnote at the bottom of the float.
+write_longtblr <- function(stem, caption, label, note, colspec,
+                            header_rows, body_rows, footer_rows,
+                            rowsep = "-3pt") {
+  tex <- c(
+    "\\begin{longtblr}[",
+    paste0("    caption = {", caption, "},"),
+    paste0("    label = {", label, "},"),
+    paste0("    note{} = {\\small ", note, "},"),
+    "]{",
+    paste0("  colspec = {", colspec, "},"),
+    paste0("  rowsep  = ", rowsep, ","),
+    "}",
+    "\\hline\\hline",
+    header_rows,
+    "\\hline",
+    body_rows,
+    "\\hline",
+    footer_rows,
+    "\\hline\\hline",
+    "\\end{longtblr}"
+  )
+  writeLines(tex, paste0(stem, ".tex"))
+  invisible(tex)
+}
+
+# Coefficient table writer for fixest models. Builds body from a `groups` list
+# (names = section labels used as blank-line separators, values = char vector
+# of term names; NULL value inserts a \\hline separator).
+# event_counts: named list model_name -> integer, for "Onset events" footer row.
+write_coef_longtblr <- function(
+  models, stem, caption, label, note, groups, var_labels,
+  event_counts = NULL, show_pr2 = TRUE
+) {
+  col_names <- names(models)
+  n_spec    <- length(col_names)
+
+  .stars <- function(p) ifelse(is.na(p), "",
+    ifelse(p < 0.01, "***", ifelse(p < 0.05, "**", ifelse(p < 0.1, "*", ""))))
+
+  .cell <- function(nm, term) {
+    ct <- tryCatch(coeftable(models[[nm]]), error = function(e) NULL)
+    if (is.null(ct) || !term %in% rownames(ct)) return(c(est = "", se = ""))
+    b <- ct[term, "Estimate"]; s <- ct[term, "Std. Error"]; p <- ct[term, ncol(ct)]
+    c(est = sprintf("%.3f%s", b, .stars(p)), se = sprintf("(%.3f)", s))
+  }
+
+  .coef_rows <- function(term) {
+    lab   <- var_labels[term]; if (is.na(lab)) lab <- term
+    cells <- lapply(col_names, .cell, term = term)
+    r1    <- c(paste0("\\quad ", lab), vapply(cells, `[[`, character(1), "est"))
+    r2    <- c("",                     vapply(cells, `[[`, character(1), "se"))
+    c(paste(r1, collapse = " & "), " \\\\",
+      paste(r2, collapse = " & "), " \\\\")
+  }
+
+  body_rows <- c()
+  for (i in seq_along(groups)) {
+    terms <- groups[[i]]
+    if (is.null(terms)) {
+      body_rows <- c(body_rows, "\\hline")
+    } else {
+      if (i > 1L && !is.null(groups[[i - 1L]])) body_rows <- c(body_rows, "")
+      body_rows <- c(body_rows, unlist(lapply(terms, .coef_rows)))
+    }
+  }
+
+  header_rows <- paste0(paste(c("", col_names), collapse = " & "), " \\\\")
+
+  fmt_n <- function(x) format(as.integer(x), big.mark = ",", scientific = FALSE)
+  n_vals <- setNames(
+    vapply(col_names, function(nm)
+      tryCatch(nobs(models[[nm]]), error = function(e) NA_integer_), integer(1)),
+    col_names)
+  pr2_vals <- if (show_pr2)
+    setNames(vapply(col_names, function(nm)
+      tryCatch(as.numeric(r2(models[[nm]], "pr2")), error = function(e) NA_real_),
+      numeric(1)), col_names)
+  else NULL
+
+  footer_rows <- c(
+    paste0(paste(c("Year/State FE", rep("Yes", n_spec)), collapse = " & "), " \\\\"),
+    paste0(paste(c("Observations",  fmt_n(n_vals)),       collapse = " & "), " \\\\")
+  )
+  if (!is.null(event_counts)) {
+    ev_vals <- vapply(col_names, function(nm) fmt_n(event_counts[[nm]]), character(1))
+    footer_rows <- c(footer_rows,
+      paste0(paste(c("Onset events", ev_vals), collapse = " & "), " \\\\"))
+  }
+  if (!is.null(pr2_vals)) {
+    footer_rows <- c(footer_rows,
+      paste0(paste(c("Pseudo-$R^2$", sprintf("%.3f", pr2_vals)), collapse = " & "), " \\\\"))
+  }
+
+  write_longtblr(stem = stem, caption = caption, label = label, note = note,
+                 colspec = sprintf("l *{%d}{r}", n_spec),
+                 header_rows = header_rows,
+                 body_rows   = body_rows,
+                 footer_rows = footer_rows)
+  write_estimates_csv(models, paste0(stem, ".csv"))
+  invisible(models)
 }

@@ -164,13 +164,14 @@ cat(sprintf("  ever-broad: %d | ever-direct: %d | never: %d\n",
 # was used per variable in the provenance log.
 
 base_vars <- c(
-  kk_base    = "log_kaufkraft",
-  sk_base    = "log_steuerkraft",
-  dens_base  = "log_pop_dens",
-  bev_base   = "bev_stock_p100k",
-  chg_base   = "ev_chargepoints_p100k",
-  green_base = "muni_gruene",
-  pop_base   = "xbev"
+  kk_base          = "log_kaufkraft",
+  sk_base          = "log_steuerkraft",
+  dens_base        = "log_pop_dens",
+  bev_base         = "bev_stock_p100k",
+  chg_base         = "ev_chargepoints_p100k",
+  green_base       = "muni_gruene",
+  state_green_base = "state_gruene",
+  pop_base         = "xbev"
 )
 
 snap <- panel[year %in% BASE_WINDOW, c("AGS8", "year", unname(base_vars)),
@@ -213,7 +214,9 @@ for (nm in c("kk_base", "sk_base")) {
 }
 
 # z-scored baselines (on the AGS8 cross-section); kept as time-invariant covs
-for (nm in c("kk_base", "sk_base", "dens_base", "bev_base", "chg_base", "green_base")) {
+for (nm in c("kk_base", "sk_base", "dens_base",
+             "bev_base", "chg_base",
+             "green_base", "state_green_base")) {
   base_dt[, paste0(nm, "_z") := z(get(nm))]
 }
 
@@ -225,18 +228,20 @@ cat(sprintf("Baseline snapshot: %d AGS8 with at least one base var\n", nrow(base
 # subset. Print counts; if green_base is the binding loser, swap in a fallback
 # from state_gruene baseline.
 cat("\nBaseline covariate NA counts (relevant to CS sample):\n")
-.diag_cols <- c("kk_base_z", "sk_base_z", "dens_base_z", "green_base_z",
+.diag_cols <- c("kk_base_z", "sk_base_z", "dens_base_z",
+                "green_base_z", "state_green_base_z",
                 "bev_base_z", "chg_base_z")
 for (.c in .diag_cols) {
-  cat(sprintf("  %-14s NA=%d (%.1f%% of AGS8)\n",
+  cat(sprintf("  %-20s NA=%d (%.1f%% of AGS8)\n",
               .c, sum(is.na(base_dt[[.c]])),
               100 * mean(is.na(base_dt[[.c]]))))
 }
-.cov_keep <- complete.cases(base_dt[, c("kk_base_z", "sk_base_z",
-                                         "dens_base_z", "green_base_z"),
-                                     with = FALSE])
-cat(sprintf("CS xformla complete cases (kk+sk+dens+green): %d / %d AGS8\n",
-            sum(.cov_keep), nrow(base_dt)))
+.cov_keep <- complete.cases(
+  base_dt[, c("sk_base_z", "state_green_base_z", "dens_base_z"),
+          with = FALSE])
+cat(sprintf(
+  "CS xformla complete cases (sk+state_green+dens): %d / %d AGS8\n",
+  sum(.cov_keep), nrow(base_dt)))
 
 # green_base fallback: per AGS8, where muni_gruene is missing for all base
 # years but state_gruene is present, use the state-level baseline as a fallback.

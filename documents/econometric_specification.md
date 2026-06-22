@@ -120,7 +120,6 @@ demographics).
 | `state_gruene_z` | State Grüne vote share (L1, LOCF) | $z\{\text{state\_gruene}_{i,t-1}\}$ |
 | `fed_gruene_z`   | Federal Grüne vote share (L1, LOCF) | $z\{\text{fed\_gruene}_{i,t-1}\}$ |
 | `pers_z`         | Personnel VZE per 100k (L1) | $z\{\log1p(\text{n\_vze\_personal}_{i,t-1})\}$ |
-| `eco_z`          | PCA composite (L1) | First PC of $(\log1p \text{bev}, \log1p\text{chg})$, fit on year $\ge 2017$ (BNetzA registry pre-2017 under-coverage), sign-flipped to positive |
 | `kreis_funded`   | Strict-past Kreis funding dummy | $\mathbf{1}\{\text{kreis\_funded\_year}_i < t\}$ |
 
 ### 2.3 Specification grid
@@ -131,9 +130,8 @@ demographics).
 |---|---|---|
 | (1) | $X = \{\text{sk\_z, bev\_z, chg\_z, state\_gruene\_z, log\_dens\_z}\}$ | full |
 | (2) | (1) $+$ `pers_z` | drop Stadtstaaten (AGS2 $\in \{02,04,11\}$) |
-| (3) | `sk_z + eco_z + pers_z + state_gruene_z + log_dens_z` | full |
-| (4) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
-| (5) | (1) replacing `state_gruene_z` with `kreis_funded` | full |
+| (3) | (1) replacing `state_gruene_z` with `fed_gruene_z` | full |
+| (4) | (1) $+$ `kreis_funded` | full |
 
 ### 2.4 Inference
 
@@ -152,18 +150,14 @@ $$
 $$
 
 with $\eta_{it} = \alpha_t + \delta_{s(i)} + X_{it}'\beta$. Computed via
-`marginaleffects::avg_slopes(model, vcov = FALSE)`. The `vcov = FALSE`
-argument is necessary because `marginaleffects` does not propagate
-fixest's clustered VCOV through the delta method on FE models; we report
-the point AME and rely on the clustered coefficient SEs in
-`tab_hazard_coef` for inference.
+`marginaleffects::avg_slopes(model, vcov = ~AGS5)` with SEs clustered at
+county level, matching the coefficient-level clustering.
 
 ### 2.6 Robustness
 
 | Variant | Engine | What it tests |
 |---|---|---|
 | Logit twin                 | `feglm(..., family=logit)`            | Link sensitivity |
-| Penalised logit            | `brglm2::brglm_fit` with explicit year+AGS2 dummies | Rare-event bias (Firth-type penalty) |
 | LPM                        | `feols(...)`                          | Linearity / specification stability |
 | Complete-case              | rows with `N_elektro_overall_imp == FALSE` | Sensitivity to KBA interpolation |
 | AGS5-level appendix hazard | manual, on $\approx 50$ Kreis events | Different unit of treatment |
@@ -214,11 +208,10 @@ frames are saved:**
    preserving substantively important variation in the body of the
    distribution. Applied to all `bev_*_p100k` and `ice_neuzulassungen_p100k`.
 
-For the CS package, $g_i$ is coded as 0 for never-treated. For BJS
-(didimputation v0.5.1), $g_i$ is also coded as 0 for never-treated. Unit ID
-is `ags8_id` (integer .GRP of AGS8).
+For the CS package, $g_i$ is coded as 0 for never-treated. Unit ID is
+`ags8_id` (integer .GRP of AGS8).
 
-### 3.2 Two co-primary estimators
+### 3.2 Estimator
 
 #### 3.2.1 Callaway-Sant'Anna (CS), doubly robust
 
@@ -244,61 +237,48 @@ where $D_g = \mathbf{1}\{g_i = g\}$, $\Delta Y_{i,t,g} = Y_{it} - Y_{i,g-1}$
 $W$ in the control group. The "doubly robust" property: consistent if EITHER
 the propensity score OR the outcome regression is correctly specified.
 
-#### 3.2.2 Borusyak-Jaravel-Spiess (BJS) imputation
-
-Posit $Y_{it}(0) = \alpha_i + \lambda_t + u_{it}$ (TWFE in untreated
-potential outcome). Estimate $\hat\alpha_i, \hat\lambda_t$ on the
-*untreated* observations only (units that are not yet treated by year $t$,
-plus all never-treated). Impute $\widehat{Y_{it}(0)} = \hat\alpha_i +
-\hat\lambda_t$ for treated cells and compute
-
-$$
-\widehat{\tau}_{it} = Y_{it} - \widehat{Y_{it}(0)}.
-$$
-
-Aggregate to overall ATT or to event-time effects $\widehat{\tau}_e =
-\mathbb{E}[\widehat\tau_{it} \mid t - g_i = e]$.
-
-This estimator absorbs **time-invariant** unit heterogeneity into
-$\alpha_i$, so the baseline covariates $W_i$ are absorbed automatically.
-This is why CS-dr is the one that carries explicit baseline covariates —
-the two estimators end up conditioning on the same time-invariant
-heterogeneity through different mechanisms (FE vs `xformla`), making the
-estimates comparable.
-
 ### 3.3 Design grid (in `03_did_main.R`)
 
-| Role | Frame | CS control | Anticipation |
-|---|---|---|---|
-| **Main**       | broad  | never-treated  | 0 |
-| **Sharp**      | direct | never-treated  | 0 |
-| **Selection check** | broad  | not-yet-treated | 1 |
+| Section | Frame | Control | xformla | Files |
+|---|---|---|---|---|
+| A (main, baseline) | direct | never-treated | NULL / XFORMLA_CS | `es_main_direct.*` |
+| B (main, broad)    | broad  | never-treated | NULL / XFORMLA_CS | `es_main_broad.*`  |
+| C (robustness)     | direct (ever-treated only) | not-yet-treated | NULL / XFORMLA_CS | `es_robust_notyet.*` |
+| D – F (secondary)  | direct | never-treated | NULL | `es_{corp,priv,ice}.*` |
 
-The selection check + anticipation = 1 jointly tests (a) whether using
-future-treated units as controls changes the headline (Roth-Sant'Anna
-selection concern) and (b) whether onset year is itself a noisy proxy for
-the start of any policy attention.
+Sections A and B each produce two table columns: *Unconditional*
+(`xformla = NULL`) and *Conditional* (`xformla = XFORMLA_CS`). The
+unconditional column is the primary report; the conditional column is
+included as an in-table comparison to highlight sensitivity to covariate
+adjustment. Sections D–F run the main (unconditional, direct-frame) spec on
+corporate BEV, private BEV, and ICE registrations respectively. ICE serves
+as a pure placebo.
 
 ### 3.4 Baseline covariates $W_i$ (CS-dr only)
 
 For each AGS8, take the earliest year $\bar t_i \in \{2014, 2015, 2016\}$
 with the variable observed:
 
-| Component | Source variable | Transform |
-|---|---|---|
-| `kk_base_z`    | `log_kaufkraft` at $\bar t_i$         | cross-sectional $z$ |
-| `sk_base_z`    | `log_steuerkraft` at $\bar t_i$       | $z$ |
-| `dens_base_z`  | `log_pop_dens` at $\bar t_i$          | $z$ |
-| `green_base_z` | `muni_gruene` at $\bar t_i$           | $z$ |
-CS-dr formula: `xformla = ~ kk_base_z + sk_base_z + dens_base_z + green_base_z`.
+| Component | Source variable | Transform | Table order |
+|---|---|---|---|
+| `sk_base_z`          | `log_steuerkraft` at $\bar t_i$  | cross-sectional $z$ | 1 |
+| `state_green_base_z` | `state_gruene` at $\bar t_i$    | $z$                 | 2 |
+| `dens_base_z`        | `log_pop_dens` at $\bar t_i$    | $z$                 | 3 |
+
+CS-dr formula: `XFORMLA_CS = ~ sk_base_z + state_green_base_z + dens_base_z`.
+
+The table-order column reflects left-to-right display in appendix tables.
+`state_gruene` is the state-election Green party vote share (not municipal),
+computed in `00_prep_analysis.R` as a separate baseline snapshot
+(`state_green_base`). Municipal Green (`green_base_z`) and purchasing power
+(`kk_base_z`) are no longer part of the CS covariate set.
 
 Note: `bev_base_z` and `chg_base_z` are excluded — baseline 2014–2016
 BEV/charging counts are mass-zero across the AGS8 cross-section and collapse
 the DR design matrix to singular inside small $(g, t)$ cells.
 
-These are **time-invariant** by construction. Rationale (in three words):
-no-bad-controls; CS-has-no-unit-FE; absorbed-by-BJS-anyway. See the
-`pipeline_summary.md` Q&A for the long version.
+These are **time-invariant** by construction. Rationale: no-bad-controls;
+CS-has-no-unit-FE. See the `pipeline_summary.md` Q&A for the long version.
 
 ### 3.5 Outcomes
 
@@ -307,15 +287,15 @@ no-bad-controls; CS-has-no-unit-FE; absorbed-by-BJS-anyway. See the
 | $Y^{\text{BEV}}_{it}$    | `bev_neuzulassungen_p100k` | headline |
 | $Y^{\text{corp}}_{it}$   | `bev_corporate_p100k`      | holder-type decomposition |
 | $Y^{\text{priv}}_{it}$   | `bev_private_p100k`        | holder-type decomposition |
-| $Y^{\text{stock}}_{it}$  | `bev_stock_p100k`          | cumulative, secondary |
-| $Y^{\text{ICE}}_{it}$    | `ice_neuzulassungen_p100k` | placebo (constructed from `N_benzin_diesel_overall` counts) |
+| $Y^{\text{ICE}}_{it}$    | `ice_neuzulassungen_p100k` | placebo |
 
-Charging-point density is *not* estimated as an outcome. It enters the
-analysis only as a covariate: as `chg_z` in the hazard channels (§2.2) and
-as `chg_base_z` in the CS-dr baseline covariate vector (§3.4).
+`bev_stock_p100k` is no longer estimated in the DiD (cumulative stock mixes
+pre- and post-treatment registrations and does not cleanly identify the
+treatment effect on new adoption). Charging-point density is *not* estimated
+as an outcome; it enters the hazard channels (§2.2) as `chg_z`.
 
-All outcomes are per-100k by construction (raw KBA counts divided by
-year-specific population). No log transforms (per plan v2).
+All outcomes are per-100k by construction (raw KBA counts / year-specific
+population), winsorised at the 99th percentile. No log transforms.
 
 ### 3.6 Aggregations
 
@@ -334,17 +314,11 @@ min_e = -4, max_e = 4, balance_e = NULL, cband = TRUE)`. The dynamic
 aggregation does **not** balance event time (composition changes across
 $e$ are noted in captions).
 
-For BJS, the event-time estimate $\widehat\tau_e$ is returned directly from
-`did_imputation(horizon = TRUE, pretrends = TRUE)`. The static
-ATT comes from `horizon = NULL` (label `"treat"` in the returned data
-frame).
-
 ### 3.7 Inference
 
 | Estimator | Variance | Cluster |
 |---|---|---|
 | CS-dr | Multiplier bootstrap, $B = 2000$, simultaneous bands via `cband = TRUE` | `clustervars = "AGS5"` |
-| BJS   | Analytic, cluster-robust at the same level                                | `cluster_var = "AGS5"` |
 
 AGS5 clustering matches the Kreis-broadcast structure: any single AGS5
 project induces correlated treatment for all its AGS8, so within-Kreis
@@ -356,12 +330,10 @@ from the multiplier bootstrap percentiles; pointwise 95% bands use 1.96.
 ### 3.8 Pre-trend evidence
 
 - **CS Wald test**: $W = \widehat{\theta}_{\text{pre}}'\,\widehat V_{\text{pre}}^{-1}\,\widehat{\theta}_{\text{pre}}$
-  over pre-treatment $\text{ATT}(g,t)$ at $t < g$. Returned in
-  `cs_obj$Wpval`. Written to `pretests.csv`.
-- **BJS leads**: per-event-time pre-treatment estimates $\widehat\tau_{-4},
-  \ldots, \widehat\tau_{-1}$ are displayed in the event-study plots
-  (`es_<outcome>_<frame>_<ctrl>.pdf`). A joint pre-trend p-value is not
-  exposed by didimputation v0.5.1.
+  over pre-treatment $\text{ATT}(g,t)$ at $t < g$. Covariance $\widehat V_{\text{pre}}$
+  is computed from the multiplier bootstrap influence functions stored in
+  `es_agg$inf.func.egt`. $W \sim \chi^2(K_{\text{pre}})$ under $H_0$.
+  Reported at the bottom of every event-study table.
 
 ### 3.9 Identification assumptions (Part ii)
 
@@ -379,22 +351,20 @@ For CS-dr with never-treated control and main / sharp roles:
    robustness drops never-treated controls with treated neighbours to probe
    this.
 
-For BJS: TWFE structure on $Y_{it}(0)$ (separable unit + time effects on
-the untreated branch).
+### 3.10 Robustness (section C of `03_did_main.R`)
 
-### 3.10 Variant analyses (`04_did_robustness.R`)
+`04_did_robustness.R` has been deleted. The primary robustness check is
+section C of `03_did_main.R`:
 
-| Variant | Sample modification | Anticipation | xformla | Control |
+| Variant | Frame | Sample | xformla | Control |
 |---|---|---|---|---|
-| `baseline`           | none                                              | 0 | NULL          | nevertreated |
-| `conditional`        | none                                              | 0 | `XFORMLA_CS`  | nevertreated |
-| `anticipation_1`     | none                                              | 1 | NULL          | nevertreated |
-| `drop_2016`          | drop cohort 2016 (only one pre-period)            | 0 | NULL          | nevertreated |
-| `drop_covid`         | drop $t \in \{2020, 2021\}$ (short-run only)      | 0 | NULL          | nevertreated |
-| `complete_case`      | drop rows where `N_elektro_overall_imp == TRUE`   | 0 | NULL          | nevertreated |
-| `notyet_evertreated` | ever-treated only                                 | 0 | NULL          | notyettreated |
+| Not-yet-treated (uncond.) | direct | ever-treated only | NULL | notyettreated |
+| Not-yet-treated (cond.)   | direct | ever-treated only | XFORMLA_CS | notyettreated |
 
-Estimators per variant: BJS (static, `horizon = NULL`) and CS (simple ATT aggregation).
+Using the not-yet-treated control probes whether results are driven by
+selection into the never-treated pool (Roth–Sant'Anna concern). The
+ever-treated-only sample ensures the comparison pool consists exclusively of
+cohorts not yet treated at each calendar period.
 
 ---
 
