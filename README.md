@@ -10,7 +10,6 @@ Replication package for "Communal Projects and EV Charging Inequality" (Julian E
 |------|---------------|---------|
 | Python | ≥ 3.10 | Data cleaning and merging |
 | R | ≥ 4.3 | Analysis and table/figure output |
-| LaTeX | any modern TeX Live / MiKTeX | Compiling the paper |
 
 **Python packages:** `pandas`, `numpy`, `requests`, `beautifulsoup4`, `openpyxl`, `geopandas`, `libpysal`, `scipy`
 
