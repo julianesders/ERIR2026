@@ -20,11 +20,11 @@ ERIR2026/
 │   │   ├── 02_clean/                 # cleaned per-source
 │   │   └── 03_final/                 # merged panel + estimation frames (CSV)
 │   ├── 02_code/
-│   │   ├── 00_scraping/              # one-off scrapers (ADAC, etc.)
+│   │   ├── 00_scraping/              # one-off scrapers (EMK web)
 │   │   ├── 01_cleaning/              # per-source Python cleaners
 │   │   ├── 02_merging/               # build the AGS8 panel
 │   │   └── 03_analysis/              # R analysis pipeline (see its CLAUDE.md)
-│   └── 04_results/                   # CSV+TeX twins, figures, by script stem
+│   └── 03_output/                   # CSV+TeX twins, figures, by script stem
 ├── documents/                        # paper drafts, slides, the two long docs
 ├── materials/                        # source material (PDFs, slides, etc.)
 └── README.md
@@ -47,8 +47,8 @@ raw data sources
 01_data/03_final/frame_logit_cov_full.csv  (full panel, broad, no censoring)
 01_data/03_final/frame_did_broad.csv       (panel for staggered DiD, broad)
 01_data/03_final/frame_did_direct.csv      (panel for staggered DiD, direct)
-  ↓ (03_analysis/{02_hazard, 03_did_main, ...}.R)
-04_results/<script_stem>/{*.csv, *.tex, *.pdf}
+  ↓ (03_analysis/{02_hazard, 04_did_main, ...}.R)
+03_output/<script_stem>/{*.csv, *.tex, *.pdf}
 ```
 
 ## Conventions
@@ -67,7 +67,7 @@ raw data sources
   `count / xbev * 100_000` with `xbev` = midyear population. log1p twins are
   computed in `00_prep_analysis.R` (`log1p_<rate>`) for proportional-effect
   specifications.
-- **Outputs** live in `wd/04_results/<script_stem>/`. Every CSV-of-estimates
+- **Outputs** live in `wd/03_output/<script_stem>/`. Every CSV-of-estimates
   has a TeX twin with the same numbers.
 - **Path resolution** boilerplate at the top of every R script reads
   `commandArgs(trailingOnly = FALSE)` to find its own location, so scripts
@@ -132,5 +132,5 @@ For a from-scratch rebuild:
   `write_estimates_csv`, `resolve_root`, `results_dir`).
 - `wd/02_code/03_analysis/_did_helpers.R` — shared CS estimation + output
   machinery (`run_spec`, `run_cs`, `cs_pre_test`, `es_graph`,
-  `write_es_longtblr`, `emit_section`, `.att_row`); sourced by `03_did_main.R`
-  and `06_spillovers.R` so both produce identical-format figures/tables/CSVs.
+  `write_es_longtblr`, `emit_section`, `.att_row`); sourced by `04_did_main.R`
+  and `07_spillovers.R` so both produce identical-format figures/tables/CSVs.

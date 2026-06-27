@@ -1,7 +1,5 @@
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 
 import sys
 from pathlib import Path
@@ -207,7 +205,6 @@ panel = panel.merge(kba, on=["AGS8", "year"], how="left")
 # Interpolation policy (plan v2):
 #   - N_* and N_ev_share_*  : interior-only linear, limit=2 (limit_area="inside")
 #   - B_elektro_overall     : limit_direction="both", limit=2 (stock)
-# Must run before eco_index PCA so the fill propagates into the index and lags.
 
 panel = panel.sort_values(["AGS8", "year"])
 
@@ -247,48 +244,9 @@ print(f"bev_stock_p100k NaN after interpolation: {_bev_holes} "
 # Population density (log): population / land area in km²
 panel["log_pop_dens"] = np.log(panel["xbev"] / panel["area_qkm"])
 
-# Log Steuerkraft: negatives (rare, fiscal equalization) clipped to 0 before log1p.
-panel["log_steuerkraft"] = np.log1p(panel["q_gest_bev"].clip(lower=0))
-
-# Log Kaufkraft (per-capita EUR; INKAR Kürzel q_kaufkraft). Plan v2: strictly
-# positive — verify min; fall back to log1p if any non-positive value appears.
-_kk = panel["q_kaufkraft"]
-_kk_min = _kk.min(skipna=True)
-print(f"q_kaufkraft min = {_kk_min}")
-if pd.notna(_kk_min) and _kk_min > 0:
-    panel["log_kaufkraft"] = np.log(_kk)
-else:
-    panel["log_kaufkraft"] = np.log1p(_kk.clip(lower=0))
-
-# ── EV ecosystem index: first PC of (bev_stock_p100k, ev_chargepoints_p100k) ─
-# Fit scaler+PCA on year ≥ 2017 only. Rationale: the BNetzA Ladesäulenregister
-# became reliably comprehensive after the 2017 Ladesäulenverordnung made
-# registration mandatory. ev_chargepoints is zero-filled where the registry has
-# no entry — credible after 2017 but plausibly under-coverage before, which
-# would distort the PCA scaling. Sign is flipped if needed so that both loadings
-# are positive ("more EV ecosystem"). Score is computed for all rows where the
-# inputs are present (including <2017 rows scored using the post-2017-fit PCA).
-
-eco_vars = ["bev_stock_p100k", "ev_chargepoints_p100k"]
-eco_present = panel[eco_vars].notna().all(axis=1)
-eco_fit_mask = eco_present & (panel["year"] >= 2017)
-
-scaler = StandardScaler()
-pca    = PCA(n_components=1)
-scaler.fit(np.log1p(panel.loc[eco_fit_mask, eco_vars].values))
-pca.fit(scaler.transform(np.log1p(panel.loc[eco_fit_mask, eco_vars].values)))
-
-if (pca.components_[0] < 0).all():
-    pca.components_ = -pca.components_
-
-eco_scores = pca.transform(scaler.transform(np.log1p(panel.loc[eco_present, eco_vars].values))).ravel()
-panel["eco_index"] = np.nan
-panel.loc[eco_present, "eco_index"] = eco_scores
-
-print(f"\nEco index — PCA fit on year>=2017 ({eco_fit_mask.sum()} rows)")
-print(f"  explained variance ratio: {pca.explained_variance_ratio_[0]:.1%}")
-print(f"  loadings (bev_stock_p100k, ev_chargepoints_p100k): "
-      f"{pca.components_[0].round(4).tolist()}")
+# Log Steuerkraft: clip to 1 (handles negatives and exact zeros; no values in (0,1)
+# in the estimation sample), then conventional log. Gives clean elasticity reading.
+panel["log_steuerkraft"] = np.log(panel["q_gest_bev"].clip(lower=1))
 
 # ── Elections (AGS8 level) ────────────────────────────────────────────────────
 
@@ -308,8 +266,6 @@ for col in ["emk_active", "n_emk_active", "emk_absorbing", "emk_absorbing_n"]:
 LAG_VARS = [
     "q_gest_bev",      # steuerkraft (raw, kept for reference)
     "log_steuerkraft",
-    "log_kaufkraft",
-    "eco_index",
     "bev_stock_p100k",
     "ev_chargepoints_p100k",
     "fed_gruene",
@@ -337,12 +293,11 @@ for k in [1, 2, 3]:
 
 lag_cols_all  = [f"{c}_L{k}" for k in [1, 2, 3] for c in LAG_VARS]
 derived_cols  = [
-    "area_qkm", "log_pop_dens", "log_steuerkraft", "log_kaufkraft",
+    "area_qkm", "log_pop_dens", "log_steuerkraft",
     "bev_stock_p100k", "bev_neuzulassungen_p100k",
     "bev_corporate_p100k", "bev_private_p100k",
     "ice_neuzulassungen_p100k",
     "N_ev_share_overall", "N_ev_share_private", "N_ev_share_corporate",
-    "eco_index",
 ]
 id_cols       = ["AGS8", "AGS5", "AGS2", "year"]
 treat_cols    = ["first_treat_direct", "first_treat_broad", "treat_type",

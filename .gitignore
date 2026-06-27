@@ -1,11 +1,17 @@
 # ── Data ──────────────────────────────────────────────────────────────────────
-# Raw, intermediate, and final data files are not tracked.
-# Add explicit exceptions below if specific files should be committed.
+# Intermediate and final data are not tracked.
+# Raw data is tracked selectively — see exceptions below.
 
-wd/01_data/
+wd/01_data/02_clean/
+wd/01_data/02_intermediate/
+wd/01_data/03_final/
 wd/03_output/
 
-# ── Large source files ────────────────────────────────────────────────────────
+# Large externally sourced raw files (download separately per README):
+wd/01_data/01_raw/kba/
+wd/01_data/01_raw/INKAR_2025.csv
+
+# ── Large file types ──────────────────────────────────────────────────────────
 
 *.xlsx
 *.csv
@@ -19,6 +25,30 @@ wd/03_output/
 *.geojson
 *.parquet
 *.feather
+
+# ── Raw data exceptions ───────────────────────────────────────────────────────
+# Specific raw files tracked for replication:
+
+!wd/01_data/01_raw/crosswalks/ref-gemeinden-2010-2020.xlsx
+!wd/01_data/01_raw/crosswalks/ref-gemeinden-2020-2024.xlsx
+!wd/01_data/01_raw/crosswalks/ref-kreise-1990-2024.xlsx
+!wd/01_data/01_raw/Ladesaeulenregister_BNetzA_2026-03-25.xlsx
+!wd/01_data/01_raw/anschriftenverzeichnis-5119101237005.xlsx
+!wd/01_data/01_raw/Tabelle ERIR2026_AGS5.csv
+!wd/01_data/01_raw/11111-01-01-5_area.csv
+!wd/01_data/01_raw/erir26_personal.csv
+!wd/01_data/01_raw/scraping_raw_60/emkonzepte_database.csv
+!wd/01_data/01_raw/election_GERDA/state_harm_21.csv
+!wd/01_data/01_raw/election_GERDA/federal_muni_harm_21.csv
+!wd/01_data/01_raw/election_GERDA/municipal_harm.csv
+
+# ── Documents ─────────────────────────────────────────────────────────────────
+
+documents/
+
+# ── Claude ────────────────────────────────────────────────────────────────────
+
+.claude/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 
@@ -47,9 +77,18 @@ env/
 *.pem
 secrets.*
 
-# ── Binary documents ──────────────────────────────────────────────────────────
+# ── Binary / archive ─────────────────────────────────────────────────────────
 
 *.pdf
+*.zip
+*.tex
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 
@@ -66,10 +105,3 @@ Thumbs.db
 # ── Local config ──────────────────────────────────────────────────────────────
 
 wd/config.py
-
-# ── Exceptions ────────────────────────────────────────────────────────────────
-# Uncomment or add lines here to force-track specific files despite rules above.
-
-# !wd/01_data/01_raw/crosswalks/ref-kreise-1990-2024.xlsx
-# !wd/01_data/01_raw/crosswalks/ref-gemeinden-2020-2024.xlsx
-# !wd/01_data/02_intermediate/anschriftenverzeichnis/anschriftenverzeichnis_ags8.csv

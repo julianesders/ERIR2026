@@ -1,27 +1,23 @@
-# ERIR2026 – direct Python dependencies
-# Install into the project venv:
+# ERIR2026 — Python dependencies
+#
+# Install into a project venv:
 #   python -m venv .venv
-#   source .venv/bin/activate
+#   source .venv/bin/activate      # Windows: .venv\Scripts\activate
 #   pip install -r requirements.txt
+#
+# R packages: see README.md
 
-# Core data
-pandas>=2.2
-requests>=2.31
-lxml>=4.9
-numpy>=1.26
-scipy>=1.13
-openpyxl>=3.1
+# ── Core pipeline (cleaning + merging + spatial weights) ──────────────────────
+pandas==3.0.0
+numpy==2.4.2
+openpyxl==3.1.5          # Excel backend for pandas (INKAR / KBA / crosswalk sources)
+geopandas==1.1.3          # 04_clean_ladestationen_ags8.py, 01_spatial_weights_ags8.py
+libpysal==4.14.1          # 01_spatial_weights_ags8.py (queen contiguity weights)
+scipy==1.17.0             # 01_spatial_weights_ags8.py (sparse matrix ops)
+requests==2.32.5          # 00_scraping/ web scrapers
+beautifulsoup4==4.14.3    # 00_scraping/ HTML parsing
 
-# Geospatial
-geopandas>=1.0
-libpysal>=4.10
-
-# ML / dimensionality reduction
-scikit-learn>=1.4
-
-# Entity linkage (pulls in torch, transformers, sentence-transformers)
-linktransformer>=0.1.14
-
-# LLM classification
-anthropic>=0.50.0
-python-dotenv>=1.0
+# ── One-time entity matching (02_merging/01_match_emk_ags.py only) ───────────
+# Pulls torch + transformers (~2 GB). Only needed for the initial AGS–EMK match.
+# Skip if the matched intermediate file already exists.
+# linktransformer==0.1.18

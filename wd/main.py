@@ -5,7 +5,6 @@ Usage:
     python main.py            # run full pipeline (INKAR, KBA, ADAC scraping skipped)
     python main.py --inkar    # re-extract INKAR from source (slow, large file)
     python main.py --kba      # include KBA steps (requires delivery files on K: drive)
-    python main.py --adac     # include ADAC price scraping (~1–2 h, requires network)
     python main.py --scrape   # include the EMK scraping step (slow, network)
     python main.py --step 4   # resume from step 4 onwards
 """

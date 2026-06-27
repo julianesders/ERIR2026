@@ -12,24 +12,25 @@ dict <- c(
   # Hazard channels (lagged, z-scored on estimation sample)
   log_dens_z      = "Log pop. density (z)",
   log_dens        = "Log pop. density",
-  sk_z            = "log1p Tax capacity (z, L1)",
-  kk_z            = "Log Purchasing power (z, L1)",
-  bev_z           = "log1p BEV stock p100k (z, L1)",
-  chg_z           = "log1p Charging pts p100k (z, L1)",
-  pers_z          = "log1p Personnel FTE p100k (z, L1)",
+  sk_z            = "Log tax capacity (z, L1)",
+  bev_z           = "$\\sqrt{\\cdot}$ BEV stock p100k (z, L1)",
+  chg_z           = "$\\sqrt{\\cdot}$ EV chargers p100k (z, L1)",
+  pers_z          = "Log Personnel FTE p100k (z, L1)",
   muni_gruene_z   = "Muni Green share (z, L1)",
   state_gruene_z  = "State Green share (z, L1)",
   fed_gruene_z    = "Fed Green share (z, L1)",
   kreis_funded    = "County-funded (strict past)",
 
   # Baseline snapshot z-scores (DiD covariates)
-  kk_base_z          = "Baseline log purchasing power (z)",
   sk_base_z          = "Baseline log tax capacity (z)",
   dens_base_z        = "Baseline log pop. density (z)",
   green_base_z       = "Baseline muni Green share (z)",
   state_green_base_z = "Baseline state Green share (z)",
-  bev_base_z         = "Baseline log1p BEV stock p100k (z)",
-  chg_base_z         = "Baseline log1p Charging pts p100k (z)",
+  bev_base_z         = "Baseline $\\sqrt{\\cdot}$ BEV stock p100k (z)",
+  chg_base_z         = "Baseline $\\sqrt{\\cdot}$ EV chargers p100k (z)",
+
+  # Heterogeneity grouping
+  east               = "East Germany (1/0)",
 
   # Events
   onset_direct = "Direct-treatment onset",
@@ -40,7 +41,8 @@ dict <- c(
   bev_corporate_p100k      = "BEV new registrations, corporate (p100k)",
   bev_private_p100k        = "BEV new registrations, private (p100k)",
   bev_stock_p100k          = "BEV stock (p100k)",
-  ice_neuzulassungen_p100k = "ICE new registrations (p100k) — placebo"
+  ice_neuzulassungen_p100k = "ICE new registrations (p100k) — placebo",
+  bev_share_pct            = "BEV market share (pp, win.)"
 )
 
 # Outcome -> human label
@@ -49,52 +51,45 @@ OUTCOME_LABELS <- c(
   bev_corporate_p100k      = "BEV new registrations (corporate) per 100k",
   bev_private_p100k        = "BEV new registrations (private) per 100k",
   bev_stock_p100k          = "BEV stock per 100k population",
-  ice_neuzulassungen_p100k = "ICE new registrations per 100k (placebo)"
+  ice_neuzulassungen_p100k = "ICE new registrations per 100k (placebo)",
+  bev_share_pct            = "BEV market share (percentage points, win. 99th pct)"
 )
 
-# Event-study horizon for plots / aggte. ES_MAX is the *display* ceiling; each
-# downstream script computes its own data-driven cap via `es_max_data_driven()`
-# below (largest e supported by >= MIN_COHORTS_PER_E cohorts) and passes it to
-# aggte() / caps displayed ribbons.
+# Event-study horizon for plots / aggte. Each downstream script computes a
+# data-driven cap via `es_max_data_driven()` below and passes it to aggte().
 ES_MIN <- -4L
 ES_MAX <-  7L
 
 # Stadtstaaten (n_vze_personal conflates municipal / Länder roles)
 STADTSTAATEN <- c("02", "04", "11")
 
-# Minimum treated units for a cohort to be estimable in CS. Cohorts below this
-# are dropped entirely in 00_prep_analysis.R (singleton/near-singleton cohorts
-# produce rank-deficient within-cohort covariance and unstable DR propensity
-# fits). Applied identically to direct and broad frames.
+# East Germany split (neue Länder). Berlin (11) is treated as East here; to run
+# the contrast excluding city-states, drop AGS2 %in% STADTSTAATEN first. Used by
+# the East/West heterogeneity cut in 06_heterogeneity.R.
+EAST_AGS2 <- c("11", "12", "13", "14", "15", "16")
+
+# FRL / EmoG funding-regime break. Treated cohorts <= FRL_CUTOFF (2020) vs
+# >= 2021. Used by the pre/post-2021 heterogeneity cut in 06_heterogeneity.R.
+FRL_CUTOFF <- 2020L
+
+# Minimum treated-unit count per cohort. Cohorts below this threshold are
+# dropped entirely from DiD frames in 00_prep_analysis.R.
 COHORT_MIN <- 5L
 
-# Dynamic event-study display horizon rule: max_e is capped at the largest e
-# for which at least this many cohorts still contribute an ATT(g, g+e). Prevents
-# the right tail of the event study from being estimated off one or two cohorts
-# under balance_e = NULL. Lower to 2 for a more permissive tail.
+# Minimum number of cohorts required at event time e for es_max_data_driven()
+# to include e in the display horizon.
 MIN_COHORTS_PER_E <- 3L
 
-# BJS never-treated coding. didimputation v0.5.1 docs say `0`; we lock it here
-# so 03/04/06 cannot drift apart. The A1 guard in 03_did_main.R verifies the
-# untreated sample is non-degenerate; if it is, switch this to NA_real_ in one
-# place and rerun.
-BJS_NEVER <- 0  # numeric so fifelse stays double; flip to NA_real_ if A1 trips
-
-# Canonical CS-dr xformla — used by 03, 04, 05, 06. Baseline (z'd) covariates.
-# Note: bev_base_z and chg_base_z are dropped because (a) baseline 2014-16
-# BEV/charge counts are mass-zero across the AGS8 cross-section, so they
-# collapse to a near-constant column inside small (g,t) cells and trigger
-# singular-matrix errors in the DR fit; (b) baseline outcome is mechanically
-# related to the outcome family and is the wrong control for a flow.
+# Canonical CS-dr xformla — used by 04, 05, 06, 07. Baseline (z'd) covariates
+# computed as per-AGS8 means over CS_BASE_WINDOW = 2013:2015 (set in
+# 00_prep_analysis.R). bev_base_z and chg_base_z excluded: baseline 2013-15
+# BEV/charge counts are mass-zero across AGS8 and collapse DR design matrices.
 XFORMLA_CS <- ~ sk_base_z + state_green_base_z + dens_base_z
 
 # Data-driven upper horizon for aggte(type = "dynamic"). Returns the largest e
-# (>= 1) such that at least MIN_COHORTS_PER_E eligible cohorts have post_avail
-# >= e, given the data's last outcome year. Operates on the SAME data passed to
-# att_gt (i.e. after the COHORT_MIN drop), reading cohorts from gname_col.
-#   - eligible cohorts = unique gname_col values > 0 present in `dat`
-#   - a cohort g contributes to event time e if (yr_max - g) >= e
-# Falls back to 1L if fewer than MIN_COHORTS_PER_E cohorts exist at e = 1.
+# (>= 1) such that at least MIN_COHORTS_PER_E eligible cohorts have
+# post_avail >= e. Reads cohorts from gname_col. Falls back to 1L if fewer
+# than MIN_COHORTS_PER_E cohorts exist at e = 1.
 es_max_data_driven <- function(dat, yname, gname_col = "gname_cs") {
   yr_max <- dat[!is.na(get(yname)), max(year)]
   cohorts <- sort(unique(dat[get(gname_col) > 0L, get(gname_col)]))
@@ -163,27 +158,31 @@ resolve_root <- function() {
   dirname(dirname(dirname(self)))
 }
 
-# Standard output directory for a script: 04_results/<script_stem>/
+# Standard output directory for a script: 03_output/<script_stem>/
 results_dir <- function(root, stem) {
-  d <- file.path(root, "04_results", stem)
+  d <- file.path(root, "03_output", stem)
   dir.create(d, showWarnings = FALSE, recursive = TRUE)
   d
 }
 
 # ── Table writers ──────────────────────────────────────────────────────────────
 
-# Core longtblr writer (tabularray package). All regression/effect and
-# descriptive tables use this format. `note{}` (empty key) produces an
-# unnumbered footnote at the bottom of the float.
+# Core table writer (tabularray package).
+#
+# env = "tblr" (default): single-page table wrapped in a \begin{table} float
+#   with \centering, \caption, \label, and a threeparttable+tablenotes block
+#   for notes below the tblr body. Use for all coefficient and event-study
+#   tables that fit on one page.
+#
+# env = "longtblr": self-contained long-table float; caption, label, and note{}
+#   live in the outer [...] spec. Use only for HR/AME joint tables that span
+#   multiple columns with \SetCell spanning (these cannot live inside a box).
 write_longtblr <- function(stem, caption, label, note, colspec,
                             header_rows, body_rows, footer_rows,
-                            rowsep = "-3pt") {
-  tex <- c(
-    "\\begin{longtblr}[",
-    paste0("    caption = {", caption, "},"),
-    paste0("    label = {", label, "},"),
-    paste0("    note{} = {\\small ", note, "},"),
-    "]{",
+                            rowsep = "0pt", env = "tblr",
+                            resize = FALSE) {
+  tblr_body <- c(
+    paste0("\\begin{tblr}{"),
     paste0("  colspec = {", colspec, "},"),
     paste0("  rowsep  = ", rowsep, ","),
     "}",
@@ -191,10 +190,82 @@ write_longtblr <- function(stem, caption, label, note, colspec,
     header_rows,
     "\\hline",
     body_rows,
-    "\\hline",
-    footer_rows,
+    if (length(footer_rows)) c("\\hline", footer_rows) else NULL,
     "\\hline\\hline",
-    "\\end{longtblr}"
+    "\\end{tblr}"
+  )
+
+  if (env == "tblr") {
+    if (resize) {
+      tblr_inner <- tblr_body[-length(tblr_body)]  # drop \end{tblr}
+      tbl_body_tex <- c(
+        "\\resizebox{\\textwidth}{!}{%",
+        tblr_inner,
+        "\\end{tblr}%",
+        "}"
+      )
+    } else {
+      tbl_body_tex <- tblr_body
+    }
+    note_block <- if (nzchar(paste(note, collapse = ""))) {
+      c("\\begin{tablenotes}", note, "\\end{tablenotes}")
+    } else character(0)
+    tex <- c(
+      "\\begin{table}[!ht]",
+      "\\centering",
+      paste0("\\caption{", caption, "}"),
+      paste0("\\label{", label, "}"),
+      tbl_body_tex,
+      note_block,
+      "\\end{table}"
+    )
+  } else {
+    tex <- c(
+      sprintf("\\begin{%s}[", env),
+      paste0("    caption = {", caption, "},"),
+      paste0("    label = {", label, "},"),
+      paste0("    note{} = {\\small ", note, "},"),
+      "]{",
+      paste0("  colspec = {", colspec, "},"),
+      paste0("  rowsep  = ", rowsep, ","),
+      "}",
+      "\\hline\\hline",
+      header_rows,
+      "\\hline",
+      body_rows,
+      if (length(footer_rows)) c("\\hline", footer_rows) else NULL,
+      "\\hline\\hline",
+      sprintf("\\end{%s}", env)
+    )
+  }
+  writeLines(tex, paste0(stem, ".tex"))
+  invisible(tex)
+}
+
+# Companion .tex for a figure: a LaTeX figure float (caption + label + a
+# scriptsize note) pointing at a rendered image, mirroring the table convention
+# so captions/notes live in TeX rather than baked into the plot. `img_file` is
+# the full path to the .png/.pdf; the .tex is written to the same stem;
+# \includegraphics resolves <graphics_prefix>/<basename>. `note` defaults to
+# empty — callers pass the methodological note explicitly.
+write_fig_tex <- function(img_file, caption, label, note = "",
+                          graphics_prefix = "0_3_figures",
+                          width = "\\textwidth") {
+  base <- basename(img_file)
+  stem <- sub("\\.(png|pdf)$", "", img_file)
+  tex <- c(
+    "\\begin{figure}[!ht]",
+    "    \\centering",
+    sprintf("    \\includegraphics[width=%s]{%s/%s}",
+            width, graphics_prefix, base),
+    sprintf("    \\caption{%s}", caption),
+    sprintf("    \\label{%s}", label),
+    if (nzchar(note)) c(
+      "    \\begin{figurenotes}",
+      sprintf("        %s", note),
+      "    \\end{figurenotes}"
+    ) else NULL,
+    "\\end{figure}"
   )
   writeLines(tex, paste0(stem, ".tex"))
   invisible(tex)
@@ -206,13 +277,13 @@ write_longtblr <- function(stem, caption, label, note, colspec,
 # event_counts: named list model_name -> integer, for "Onset events" footer row.
 write_coef_longtblr <- function(
   models, stem, caption, label, note, groups, var_labels,
-  event_counts = NULL, show_pr2 = TRUE
+  event_counts = NULL, show_pr2 = TRUE, env = "tblr", resize = FALSE
 ) {
   col_names <- names(models)
   n_spec    <- length(col_names)
 
   .stars <- function(p) ifelse(is.na(p), "",
-    ifelse(p < 0.01, "***", ifelse(p < 0.05, "**", ifelse(p < 0.1, "*", ""))))
+    ifelse(p < 0.01, "$^{***}$", ifelse(p < 0.05, "$^{**}$", ifelse(p < 0.1, "$^{*}$", ""))))
 
   .cell <- function(nm, term) {
     ct <- tryCatch(coeftable(models[[nm]]), error = function(e) NULL)
@@ -269,10 +340,12 @@ write_coef_longtblr <- function(
   }
 
   write_longtblr(stem = stem, caption = caption, label = label, note = note,
-                 colspec = sprintf("l *{%d}{r}", n_spec),
+                 colspec = sprintf("l *{%d}{l}", n_spec),
                  header_rows = header_rows,
                  body_rows   = body_rows,
-                 footer_rows = footer_rows)
+                 footer_rows = footer_rows,
+                 env         = env,
+                 resize      = resize)
   write_estimates_csv(models, paste0(stem, ".csv"))
   invisible(models)
 }

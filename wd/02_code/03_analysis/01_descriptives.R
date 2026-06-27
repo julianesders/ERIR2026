@@ -4,16 +4,15 @@
 # Inequality storyline: who is COVERED, not how many euros are received.
 # Grant sizes barely vary; the distributive question is binary access.
 #
-# Outputs (04_results/01_descriptives/):
+# Outputs (03_output/01_descriptives/):
 #   fig_concentration_coverage_sk.pdf       Lorenz-style curve, ranked by sk_base
 #   fig_concentration_multi.pdf             Multi-ranking Lorenz curves (direct)
 #   tab_concentration_index.csv             Concentration indices (broad/direct × ranking)
-#   tab_balance.{tex,csv}                   means by treat_type + normalized diffs
-#   tab_desc_means.{tex,csv}               Direct vs Never: means + t-test p-values
-#   tab_desc_medians.{tex,csv}             Direct vs Never: medians + Mood p-values
+#   desc_means.{tex,csv}                    Direct vs Never: means + t-test p-values
+#   desc_medians.{tex,csv}                  Direct vs Never: medians + Mood p-values
 #   fig_map_treatment.pdf                   VG250 choropleth of treat_type (optional)
 #   tab_corr.csv                            Pairwise correlations on hazard frame
-#   tab_vif.{tex,csv}                       VIFs on hazard frame channels
+#   desc_vif.{tex,csv}                      VIFs on hazard frame channels
 #   fig_map_bev_dual_2023.png              BEV stock p100k + BEV share maps (optional)
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -37,7 +36,7 @@ self <- if (length(self_flag)) {
 root       <- dirname(dirname(dirname(self)))
 code_dir   <- file.path(root, "02_code")
 data_final <- file.path(root, "01_data", "03_final")
-out_dir    <- file.path(root, "04_results", "01_descriptives")
+out_dir    <- file.path(root, "03_output", "01_descriptives")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 source(file.path(code_dir, "03_analysis", "_dict.R"))
 
@@ -116,6 +115,7 @@ cat("Concentration indices (sk_base):  broad ",
 
 lz_sk <- build_lorenz(xs, "sk_base")
 
+# No caption on the plot — it lives in the companion .tex (write_fig_tex below).
 plot_lorenz <- function(lz, rank_label, ci) {
   ggplot(lz, aes(x = x, y = y, color = line, linetype = line)) +
     geom_line(linewidth = 0.8) +
@@ -126,32 +126,41 @@ plot_lorenz <- function(lz, rank_label, ci) {
                                      "Direct treatment" = "solid",
                                      "45°" = "dashed")) +
     labs(
-      x = paste0("Cumulative population share (Gemeinden ranked by ",
+      x = paste0("Cumulative population share (municipalities ranked by ",
                  rank_label, ")"),
       y = "Cumulative share of treated population",
-      color = NULL, linetype = NULL,
-      caption = sprintf("Concentration index — broad: %.3f, direct: %.3f",
-                        ci["broad"], ci["direct"])
+      color = NULL, linetype = NULL
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 }
 
 ggsave(file.path(out_dir, "fig_concentration_coverage_sk.pdf"),
-       plot_lorenz(lz_sk, "baseline log Steuerkraft", ci_sk),
+       plot_lorenz(lz_sk, "baseline log tax capacity", ci_sk),
        width = 7, height = 5)
+write_fig_tex(
+  img_file = file.path(out_dir, "fig_concentration_coverage_sk.pdf"),
+  caption  = paste0("Concentration of Treated Population by Baseline ",
+                    "Tax Capacity"),
+  label    = "fig:concentration_coverage_sk",
+  note     = sprintf(paste0(
+    "Lorenz-style concentration curves: cumulative share of the treated ",
+    "population captured by municipalities ranked by baseline log tax ",
+    "capacity (Steuerkraft). The dashed 45-degree line is the line of ",
+    "equality. Concentration index --- broad: %.3f, direct: %.3f."),
+    ci_sk[["broad"]], ci_sk[["direct"]])
+)
 
 # (b) Multi-ranking broad-coverage Lorenz: one line per ranking variable.
 # Each line shows the cumulative share of the broad-treated population
-# captured by the bottom-X% of the population when Gemeinden are sorted by
+# captured by the bottom-X% of the population when municipalities are sorted by
 # the corresponding baseline variable.
 ranking_vars <- c(
-  sk_base       = "Log Steuerkraft",
-  kk_base       = "Log Kaufkraft",
-  green_base    = "Muni Grüne share",
+  sk_base       = "Log tax capacity",
+  green_base    = "Muni Green share",
   staffing_base = "Staffing (FTE)",
-  bev_base      = "log1p BEV stock p100k",
-  chg_base      = "log1p Charge pts p100k"
+  bev_base      = "BEV stock p100k",
+  chg_base      = "EV chargers p100k"
 )
 
 build_lorenz_one <- function(xs, rank_col, pop_col, treat_col) {
@@ -176,27 +185,35 @@ for (nm in names(ci_multi)) {
   cat(sprintf("  %-26s %.3f\n", nm, ci_multi[[nm]]))
 }
 
+# No caption on the plot — it lives in the companion .tex (write_fig_tex below).
 p_multi <- ggplot(lz_multi, aes(x = x, y = y, color = ranking)) +
   geom_abline(slope = 1, intercept = 0, color = "grey50",
               linetype = "dashed", linewidth = 0.5) +
   geom_line(linewidth = 0.8) +
   scale_color_brewer(palette = "Dark2") +
   labs(
-    x = "Cumulative population share (Gemeinden ranked by variable)",
+    x = "Cumulative population share (municipalities ranked by variable)",
     y = "Cumulative share of treated population (direct)",
-    color = NULL,
-    caption = paste0(
-      "Concentration indices (direct): ",
-      paste(sprintf("%s = %.3f", names(ci_multi), ci_multi),
-            collapse = "; ")
-    )
+    color = NULL
   ) +
   theme_minimal(base_size = 11) +
-  theme(legend.position = "bottom",
-        plot.caption = element_text(size = 8))
+  theme(legend.position = "bottom")
 
 ggsave(file.path(out_dir, "fig_concentration_multi.pdf"),
        p_multi, width = 8, height = 5.5)
+write_fig_tex(
+  img_file = file.path(out_dir, "fig_concentration_multi.pdf"),
+  caption  = paste0("Concentration of Directly-Treated Population across ",
+                    "Baseline Rankings"),
+  label    = "fig:concentration_multi",
+  note     = paste0(
+    "Lorenz-style concentration curves for the directly-treated population, ",
+    "one line per baseline ranking variable; the dashed 45-degree line is the ",
+    "line of equality. Concentration indices (direct): ",
+    paste(sprintf("%s = %.3f", names(ci_multi), ci_multi), collapse = "; "),
+    "."
+  )
+)
 
 # CSV: SK both scopes + multi-ranking direct
 ci_dt <- rbindlist(list(
@@ -209,83 +226,28 @@ ci_dt <- rbindlist(list(
 ), use.names = TRUE, fill = TRUE)
 fwrite(ci_dt, file.path(out_dir, "tab_concentration_index.csv"))
 
-# -- 2. Balance: means by treat_type + normalized differences vs never --------
-
-bal_vars <- c(
-  log_pop_dens   = "Log pop density",
-  log_steuerkraft= "log1p Steuerkraft",
-  log_kaufkraft  = "Log Kaufkraft",
-  bev_stock_p100k= "BEV stock p100k",
-  ev_chargepoints_p100k = "Charge pts p100k",
-  muni_gruene    = "Muni Grüne share",
-  state_gruene   = "State Grüne share",
-  fed_gruene     = "Fed Grüne share",
-  n_vze_personal = "Personnel VZE p100k"
-)
-
-# Single pre-treatment snapshot per AGS8: earliest year in [2014,2016] with the
-# variable observed (one row per (AGS8, variable)). Means by treat_type and
-# normalized differences against the "never" cell.
-bal_long <- rbindlist(lapply(names(bal_vars), function(v) {
-  d <- dat[year %in% 2014:2016 & !is.na(get(v)),
-           .(AGS8, treat_type, year, val = get(v))]
-  setorder(d, AGS8, year)
-  d <- d[, .SD[1L], by = AGS8]
-  d[, var := v][]
-}), fill = TRUE)
-
-bal_means <- bal_long[, .(
-  mean = mean(val, na.rm = TRUE),
-  sd   = sd(val,   na.rm = TRUE),
-  n    = .N
-), by = .(var, treat_type)]
-
-ref <- bal_means[treat_type == "never", .(var, mean_ref = mean, sd_ref = sd)]
-bal_means <- merge(bal_means, ref, by = "var", all.x = TRUE)
-bal_means[, norm_diff := (mean - mean_ref) / sqrt((sd^2 + sd_ref^2) / 2)]
-bal_means[, var_label := vapply(var, function(v) bal_vars[[v]], character(1))]
-setcolorder(bal_means, c("var", "var_label", "treat_type", "n", "mean", "sd", "norm_diff"))
-
-fwrite(bal_means, file.path(out_dir, "tab_balance.csv"))
-
-tex_lines <- c(
-  "\\begin{tabular}{lllrrrr}",
-  "\\hline",
-  "Variable & Treat type & N & Mean & SD & Norm.\\ diff (vs never) \\\\",
-  "\\hline",
-  bal_means[, sprintf("%s & %s & %d & %.3f & %.3f & %.3f \\\\",
-                      var_label, treat_type, n, mean, sd, norm_diff)],
-  "\\hline",
-  "\\end{tabular}"
-)
-writeLines(tex_lines, file.path(out_dir, "tab_balance.tex"))
-
-# -- 2b. Direct vs Never: means + medians over 2015-latest --------------------
-# Per-AGS8 within-unit mean over the 2015-latest window for each variable,
+# -- 2. Direct vs Never: means + medians over 2014-2016 -----------------------
+# Per-AGS8 within-unit mean over the 2014-2016 baseline window for each variable,
 # then group-level mean (SE) with two-sided t-test and group-level median
 # with Mood's median test (chi-squared on the 2x2 above/below pooled-median
 # table). Sample restriction: treat_type ∈ {direct, never}; Stadtstaaten
 # kept. N at the bottom of each table is the AGS8 count per group.
 
-dat[, muni_gruene_pp  := muni_gruene  * 100]
 dat[, state_gruene_pp := state_gruene * 100]
-dat[, fed_gruene_pp   := fed_gruene   * 100]
 dat[, xbev_100k       := xbev / 1e5]
+dat[, pop_dens        := exp(log_pop_dens)]
 
 desc_vars <- c(
   xbev_100k             = "Population (100k)",
-  log_pop_dens          = "Log population density",
-  log_steuerkraft       = "Log Steuerkraft p.c.",
-  log_kaufkraft         = "Log Kaufkraft p.c.",
-  muni_gruene_pp        = "Muni.\\ Grüne share (pp)",
-  state_gruene_pp       = "State Grüne share (pp)",
-  fed_gruene_pp         = "Fed.\\ Grüne share (pp)",
-  staffing_ags8         = "Staffing (FTE, AGS5/N muni)",
-  bev_stock_p100k       = "BEV stock p100k",
-  ev_chargepoints_p100k = "Charge points p100k"
+  pop_dens              = "Pop.\\ density (per km\\textsuperscript{2})",
+  q_gest_bev            = "Tax capacity (Euro p.c.)",
+  bev_stock_p100k       = "BEV stock (per 100k)",
+  ev_chargepoints_p100k = "Charge points (per 100k)",
+  state_gruene_pp       = "Green vote, state (pp)",
+  n_vze_personal        = "Personnel (FTE per 100k)"
 )
 
-dat_dn <- dat[treat_type %in% c("direct", "never") & year >= 2015]
+dat_dn <- dat[treat_type %in% c("direct", "never") & year %in% 2014:2016]
 unit_means <- dat_dn[, lapply(.SD, mean, na.rm = TRUE),
                      by = .(AGS8, treat_type),
                      .SDcols = names(desc_vars)]
@@ -318,7 +280,7 @@ mean_rows <- rbindlist(lapply(names(desc_vars), function(v) {
     p_value     = tt$p.value
   )
 }))
-fwrite(mean_rows, file.path(out_dir, "tab_desc_means.csv"))
+fwrite(mean_rows, file.path(out_dir, "desc_means.csv"))
 
 med_rows <- rbindlist(lapply(names(desc_vars), function(v) {
   x <- unit_means[treat_type == "direct", get(v)]; x <- x[is.finite(x)]
@@ -330,39 +292,38 @@ med_rows <- rbindlist(lapply(names(desc_vars), function(v) {
     p_value       = mood_p(x, y)
   )
 }))
-fwrite(med_rows, file.path(out_dir, "tab_desc_medians.csv"))
+fwrite(med_rows, file.path(out_dir, "desc_medians.csv"))
 
-# LaTeX twin: means
-tex_means <- c(
-  "\\begin{tabular}{lccc}",
-  "\\hline",
-  "Variable & Direct & Never & p-value (t-test) \\\\",
-  "         & Mean (SE) & Mean (SE) &   \\\\",
-  "\\hline",
-  mean_rows[, sprintf("%s & %.3f (%.3f) & %.3f (%.3f) & %.3f \\\\",
-                      label, direct_mean, direct_se,
-                      never_mean, never_se, p_value)],
-  "\\hline",
-  sprintf("N (AGS8) & %d & %d & \\\\", N_direct, N_never),
-  "\\hline",
-  "\\end{tabular}"
+write_longtblr(
+  stem        = file.path(out_dir, "desc_means"),
+  caption     = "Balance Table: Means by Treatment Status (2014--2016)",
+  label       = "tab:desc_means",
+  note        = "",
+  colspec     = "l r r r r r",
+  header_rows = c(
+    "Variable & \\SetCell[c=2]{c} Direct & & \\SetCell[c=2]{c} Never & & $p$-value \\\\",
+    "         & Mean & SE & Mean & SE & (t-test) \\\\"
+  ),
+  body_rows   = mean_rows[, sprintf(
+    "%s & %.3f & %.3f & %.3f & %.3f & %.3f \\\\",
+    label, direct_mean, direct_se, never_mean, never_se, p_value)],
+  footer_rows = sprintf(
+    "$N$ (AGS8) & \\SetCell[c=2]{c} %d & & \\SetCell[c=2]{c} %d & & \\\\",
+    N_direct, N_never)
 )
-writeLines(tex_means, file.path(out_dir, "tab_desc_means.tex"))
 
-# LaTeX twin: medians
-tex_meds <- c(
-  "\\begin{tabular}{lccc}",
-  "\\hline",
-  "Variable & Direct & Never & p-value (Mood's median) \\\\",
-  "\\hline",
-  med_rows[, sprintf("%s & %.3f & %.3f & %.3f \\\\",
-                     label, direct_median, never_median, p_value)],
-  "\\hline",
-  sprintf("N (AGS8) & %d & %d & \\\\", N_direct, N_never),
-  "\\hline",
-  "\\end{tabular}"
+write_longtblr(
+  stem        = file.path(out_dir, "desc_medians"),
+  caption     = "Balance Table: Medians by Treatment Status (2014--2016)",
+  label       = "tab:desc_medians",
+  note        = "",
+  colspec     = "l r r r",
+  header_rows = "Variable & Direct & Never & $p$-value (Mood's) \\\\",
+  body_rows   = med_rows[, sprintf(
+    "%s & %.3f & %.3f & %.3f \\\\",
+    label, direct_median, never_median, p_value)],
+  footer_rows = sprintf("$N$ (AGS8) & %d & %d & \\\\", N_direct, N_never)
 )
-writeLines(tex_meds, file.path(out_dir, "tab_desc_medians.tex"))
 
 cat(sprintf(
   "Direct vs Never descriptives: N_direct=%d, N_never=%d -> %s\n",
@@ -397,6 +358,18 @@ make_map <- function() {
     theme(legend.position = "bottom")
   ggsave(file.path(out_dir, "fig_map_treatment.pdf"), p_map,
          width = 7, height = 9)
+  write_fig_tex(
+    img_file = file.path(out_dir, "fig_map_treatment.pdf"),
+    caption  = "Treatment Status by Municipality",
+    label    = "fig:map_treatment",
+    note     = paste0(
+      "EMK treatment status of German municipalities (AGS8). ",
+      "\\emph{Direct}: a directly-funded Gemeinde-level project; ",
+      "\\emph{Broadcast only}: covered only via a Kreis-level project; ",
+      "\\emph{Never}: untreated. Grey areas have no data. ",
+      "Data sources: BBSR EMK list, INKAR."
+    )
+  )
 }
 if (requireNamespace("sf", quietly = TRUE) && file.exists(gpkg_path)) {
   res <- tryCatch(make_map(), error = function(e) {
@@ -412,13 +385,14 @@ if (requireNamespace("sf", quietly = TRUE) && file.exists(gpkg_path)) {
 
 ph[, log_dens_z     := z(log_pop_dens)]
 ph[, sk_z           := z(log_steuerkraft_L1)]
-ph[, kk_z           := z(log_kaufkraft_L1)]
-ph[, bev_z          := z(log1p(pmax(bev_stock_p100k_L1, 0)))]
-ph[, chg_z          := z(log1p(pmax(ev_chargepoints_p100k_L1, 0)))]
-ph[, pers_z         := z(log1p(pmax(n_vze_personal_L1, 0)))]
+ph[, bev_z          := z(sqrt(pmin(pmax(bev_stock_p100k_L1, 0),
+                              quantile(bev_stock_p100k_L1, 0.99, na.rm = TRUE))))]
+ph[, chg_z          := z(sqrt(pmin(pmax(ev_chargepoints_p100k_L1, 0),
+                              quantile(ev_chargepoints_p100k_L1, 0.99, na.rm = TRUE))))]
+ph[, pers_z         := z(log(n_vze_personal_L1))]
 ph[, muni_gruene_z  := z(muni_gruene_L1)]
 
-X_cols <- c("log_dens_z", "sk_z", "kk_z", "bev_z", "chg_z", "pers_z", "muni_gruene_z")
+X_cols <- c("log_dens_z", "sk_z", "bev_z", "chg_z", "pers_z", "muni_gruene_z")
 X <- ph[, ..X_cols]
 X <- X[complete.cases(X)]
 
@@ -434,18 +408,78 @@ vif_vals <- sapply(X_cols, function(v) {
   1 / (1 - summary(fit)$r.squared)
 })
 vif_dt <- data.table(var = X_cols, VIF = round(vif_vals, 3))
-fwrite(vif_dt, file.path(out_dir, "tab_vif.csv"))
+fwrite(vif_dt, file.path(out_dir, "desc_vif.csv"))
 
-tex_lines <- c(
-  "\\begin{tabular}{lr}",
-  "\\hline",
-  "Variable & VIF \\\\",
-  "\\hline",
-  vif_dt[, sprintf("%s & %.2f \\\\", var, VIF)],
-  "\\hline",
-  "\\end{tabular}"
+write_longtblr(
+  stem        = file.path(out_dir, "desc_vif"),
+  caption     = "Variance Inflation Factors: Hazard Frame Regressors",
+  label       = "tab:desc_vif",
+  note        = paste0(
+    "VIFs from auxiliary OLS regressions on the hazard frame (\\texttt{frame\\_hazard.csv}). ",
+    "All regressors z-scored on the estimation sample. ",
+    "Rule of thumb: VIF $>10$ indicates high multicollinearity; ",
+    "VIF $>5$ warrants attention. ",
+    "Note: \\texttt{muni\\_gruene\\_z} is included as a diagnostic ",
+    "but does not enter the main hazard specifications."
+  ),
+  colspec     = "l r",
+  header_rows = "Variable & VIF \\\\",
+  body_rows   = vif_dt[, sprintf("%s & %.2f \\\\", var, VIF)],
+  footer_rows = character(0)
 )
-writeLines(tex_lines, file.path(out_dir, "tab_vif.tex"))
+
+# -- 4b. Transformation comparison: raw | log1p | sqrt -------------------------
+# 6-panel grid (2 variables × 3 transforms) showing how each transformation
+# reshapes the distribution. Skewness annotated in each panel to justify sqrt.
+
+.skew <- function(x) {
+  x <- x[is.finite(x)]
+  n <- length(x); m <- mean(x); s <- sd(x)
+  (n / ((n - 1) * (n - 2))) * sum(((x - m) / s)^3)
+}
+
+bev_cap  <- quantile(ph$bev_stock_p100k_L1,       0.99, na.rm = TRUE)
+chg_cap  <- quantile(ph$ev_chargepoints_p100k_L1, 0.99, na.rm = TRUE)
+bev_base_vec <- pmin(pmax(ph$bev_stock_p100k_L1,       0), bev_cap)
+chg_base_vec <- pmin(pmax(ph$ev_chargepoints_p100k_L1, 0), chg_cap)
+
+tf_panels <- rbindlist(lapply(
+  list(
+    list(x = bev_base_vec, lab = "BEV stock p100k"),
+    list(x = chg_base_vec, lab = "EV chargers p100k")
+  ),
+  function(v) rbindlist(list(
+    data.table(value = v$x,             tf = "Raw",   var = v$lab),
+    data.table(value = log1p(v$x),      tf = "log1p", var = v$lab),
+    data.table(value = sqrt(v$x),       tf = "√x", var = v$lab)
+  ))
+))
+tf_panels[, tf  := factor(tf,  levels = c("Raw", "log1p", "√x"))]
+tf_panels[, var := factor(var, levels = c("BEV stock p100k", "EV chargers p100k"))]
+
+skew_labs <- tf_panels[, .(label = sprintf("Skewness: %.2f", .skew(value))),
+                        by = .(var, tf)]
+
+p_tf <- ggplot(tf_panels, aes(x = value)) +
+  geom_histogram(bins = 60, fill = "#4292c6", colour = NA, alpha = 0.85) +
+  geom_text(data = skew_labs, aes(label = label),
+            x = Inf, y = Inf, hjust = 1.05, vjust = 1.5,
+            size = 2.6, inherit.aes = FALSE) +
+  facet_grid(var ~ tf, scales = "free") +
+  labs(x = NULL, y = "Frequency",
+       title = "Distribution of BEV/charger covariates: Raw vs log1p vs √x") +
+  theme_minimal(base_size = 10) +
+  theme(panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_blank(),
+        strip.text         = element_text(face = "bold"),
+        axis.line          = element_line(colour = "grey30"),
+        plot.title         = element_text(size = 10))
+
+out_tf <- file.path(out_dir, "fig_transform_compare.png")
+ragg::agg_png(out_tf, width = 2400, height = 1400, res = 220)
+print(p_tf)
+dev.off()
+cat(sprintf("Saved: %s\n", out_tf))
 
 # -- 5. Dual BEV choropleth, 2023 -----------------------------------------------
 # Left panel:  BEV stock per 100k population, winsorised at 99th pct.
@@ -572,6 +606,18 @@ make_bev_dual_map <- function() {
   ggsave(file.path(out_dir, "fig_map_bev_dual_2023.png"), p_combined,
          width = fig_width_in, height = fig_height_in, dpi = 300,
          device = ragg::agg_png)
+  # Companion .tex (panel titles stay on the image as subplot labels; the
+  # overall caption/note live here). Mirrors the curated paper-folder wording.
+  write_fig_tex(
+    img_file = file.path(out_dir, "fig_map_bev_dual_2023.png"),
+    caption  = "BEV Coverage in Germany (2023)",
+    label    = "fig:bevgermany",
+    note     = paste0(
+      "Both variables are winsorized at 99\\%. In grey shaded areas no data ",
+      "is available. Data: \\hyperlink{cite.kba_zfzr_t_2023}{\\citeauthor{kba_zfzr_t_2023}} ",
+      "and \\hyperlink{cite.bbsr_inkar_2025}{\\citeauthor{bbsr_inkar_2025}}."
+    )
+  )
   cat("Saved fig_map_bev_dual_2023.png\n")
 }
 if (requireNamespace("sf", quietly = TRUE) &&

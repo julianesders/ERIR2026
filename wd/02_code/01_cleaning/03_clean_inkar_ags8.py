@@ -71,7 +71,7 @@ panel = panel.merge(
 panel = panel.sort_values(["AGS8", "year"]).reset_index(drop=True)
 
 # Area (TN23-kataster_qkm) is superseded by the dedicated area panel built in
-# 11_clean_area_ags8.py and merged in 02_merge_emk_panel_ags8.py.
+# 10_clean_area_ags8.py and merged in 02_merge_emk_panel_ags8.py.
 panel = panel.drop(columns=["TN23-kataster_qkm"], errors="ignore")
 
 # ── Export ─────────────────────────────────────────────────────────────────────

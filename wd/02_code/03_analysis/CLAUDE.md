@@ -29,14 +29,13 @@ For long-form rationale: `documents/econometric_specification.md`.
 
 1. `01_spatial_weights_ags8.py` (Python — produces `spatial_neighbors_ags8.csv`)
 2. `00_prep_analysis.R` — builds the six estimation frames
-3. Then any of `01_descriptives.R`, `02_hazard.R`, `02b_logit_uncensored.R`,
-   `03_did_main.R`, `05_heterogeneity.R`, `06_spillovers.R`
-   (`04_did_robustness.R` was deleted; robustness lives in `03_did_main.R`)
-4. `07_assemble.R` — gathers everything into a manifest
+3. Then any of `01_descriptives.R`, `02_hazard.R`, `03_logit_uncensored.R`,
+   `04_did_main.R`, `05_did_anticipation.R`, `06_heterogeneity.R`, `07_spillovers.R`
+   (`04_did_robustness.R` was deleted; robustness lives in `04_did_main.R`)
 
 `_dict.R` is sourced from every script; never run on its own. `_did_helpers.R`
-(shared CS estimation + output machinery) is sourced by `03_did_main.R` and
-`06_spillovers.R`; also never run on its own.
+(shared CS estimation + output machinery) is sourced by `04_did_main.R` and
+`07_spillovers.R`; also never run on its own.
 
 ## Frames built by `00_prep_analysis.R`
 
@@ -76,7 +75,12 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
   baseline z-covariates for the conditional CS variant. Order matches output
   tables: tax capacity | state Green vote share | log pop. density. Baseline
   BEV/charging covariates excluded (mass-zero across 2014–16 cross-section
-  → singular DR design matrix).
+  → singular DR design matrix). `green_base_z` (municipal election baseline)
+  is NOT in this formula — municipal and state elections are separate series
+  (different cycles, not different spatial granularity); municipal Green is
+  only used in the election-variant hazard tables. `state_green_base_z` has
+  59 NA AGS8 (58 Lower Saxony, 1 RLP) due to failed GERDA geo-harmonisation;
+  these are dropped via `complete.cases()` and no fallback is applied.
 - `z(x)`: scale to mean-0 SD-1 on the input sample. Apply *after* every
   sample restriction.
 - `wq(x, w, probs)`: population-weighted quantiles.
@@ -84,8 +88,11 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
 
 **Table writers** (all regression and descriptive tables use these):
 - `write_longtblr(stem, caption, label, note, colspec, header_rows, body_rows,
-  footer_rows, rowsep="-3pt")`: core TeX builder using tabularray `longtblr`.
-  Emits `label = {}` inside the `[...]` options block.
+  footer_rows, rowsep="0pt", env="tblr")`: core TeX builder. Default `env="tblr"`
+  wraps in `\begin{table}[!]` with `\centering`, `\caption`, `\label`, and
+  `threeparttable`+`tablenotes` for notes. Pass `env="longtblr"` for HR/AME
+  joint tables that use `\SetCell` spanning (these are multi-page and cannot
+  live inside a box).
 - `write_coef_longtblr(models, stem, caption, label, note, groups, var_labels,
   event_counts, show_pr2)`: builds a raw-coefficient table from a named list
   of fixest models. Groups are a named list; `NULL` entries insert `\hline`;
@@ -95,7 +102,7 @@ Constants set in `00_prep_analysis.R`: `MIN_YEAR = 2010L`, `BASE_WINDOW =
 
 ### `_did_helpers.R` — shared CS estimation + output machinery
 
-Sourced by **both** `03_did_main.R` and `06_spillovers.R` (after `_dict.R`), so
+Sourced by **both** `04_did_main.R` and `07_spillovers.R` (after `_dict.R`), so
 every CS event study — main or spillover — produces the same-format figure,
 table and CSV; only the estimation sample differs. Definitions only, no
 top-level estimation. Contents:
@@ -145,9 +152,8 @@ control balance, choropleth maps, and VIF/correlation diagnostics. Outputs via
 
 | Stem | Content |
 |---|---|
-| `desc_balance` | Balance table (means + tests, treated vs control) |
-| `desc_means` | Descriptive means table |
-| `desc_medians` | Descriptive medians table |
+| `desc_means` | Balance table: means by treatment status, 2014--2016 average |
+| `desc_medians` | Balance table: medians by treatment status, 2014--2016 average |
 | `desc_vif` | VIF table for hazard-frame channel set |
 
 Note: VIF section includes `kk_z` and `muni_gruene_z` as diagnostics even
@@ -177,12 +183,7 @@ spec (2), which includes `pers_z`.
 - (2) + Personnel: adds `pers_z`; drops city-states
 - (3) + County coverage: adds `kreis_funded`
 
-**Election-variant table** uses spec (3) as the base, varying the Green
-party electoral level: state (col. 1), federal (col. 2), municipal (col. 3).
-Municipal Green (`muni_gruene_z`) has NAs where no municipal election was held,
-so col. 3 runs on a smaller sample.
-
-**Outputs** in `04_results/02_hazard/`:
+**Outputs** in `03_output/02_hazard/`:
 
 | Stem | Content | Where |
 |---|---|---|
@@ -190,8 +191,6 @@ so col. 3 runs on a smaller sample.
 | `hazard_coef` | cloglog raw log-hazard coef (appendix) | Appendix |
 | `hazard_logit_hr_ame` | logit OR + AME (7-col) | Appendix |
 | `hazard_logit_coef` | logit raw log-odds coef | Appendix |
-| `hazard_election_hr_ame` | election-variant HR + AME | Appendix |
-| `hazard_election_coef` | election-variant raw coef | Appendix |
 | `hazard_broad_hr_ame` | broad-treatment cloglog HR + AME (5-col, 2 specs) | Appendix |
 | `hazard_broad_coef` | broad-treatment cloglog raw coef | Appendix |
 
@@ -201,7 +200,7 @@ HR = `exp(β̂)`, 95% CI = `[exp(β̂ − 1.96·SE), exp(β̂ + 1.96·SE)]`. OR
 (logit) uses the same formula. AMEs computed via `avg_slopes(m, vcov = ~AGS5)`
 from `marginaleffects`.
 
-### `02b_logit_uncensored.R`
+### `03_logit_uncensored.R`
 
 **Absorbing-treatment logit** on `frame_logit_full.csv` (full panel, no
 risk-set censoring). Different outcome and sample logic from `02_hazard.R`.
@@ -217,12 +216,12 @@ Specification grid:
 Tables combine Direct and Broad into a single 5-column layout with spanning
 headers indicating the treatment definition:
 
-Outputs in `04_results/02b_logit_uncensored/`:
+Outputs in `03_output/03_logit_uncensored/`:
 - `logit_coef.{tex,csv}` — raw coefficients, Direct (1)-(3) | Broad (1)-(2)
 - `logit_ame.{tex,csv}` — average marginal effects, same layout
 - `logit_diag_{direct,broad}.csv` — treated obs per state/year
 
-### `03_did_main.R` — all DiD estimates
+### `04_did_main.R` — all DiD estimates
 
 **Callaway-Sant'Anna (CS)** estimator (`did::att_gt`); `est_method` is
 threaded per spec. Bootstrap: multiplier, `CS_BITERS = 2000L`, clustered on
@@ -231,33 +230,28 @@ AGS5. Event-study simultaneous bands: `cband = TRUE` in `aggte()` (pointwise
 `allow_unbalanced_panel = TRUE`.
 
 **Primary outcome:** `bev_neuzulassungen_p100k` (level only; winsorised).
-**Three specs per main frame:** unconditional (`xformla = NULL`,
-estimator-invariant — reg ≡ dr, reported once) and conditional
-(`xformla = XFORMLA_CS`) run with **both** `est_method = "reg"` (outcome
-regression) and `est_method = "dr"` (doubly robust). The **main table** shows
-*Unconditional + Conditional (reg)*; the **appendix twin** (`*_dr.{tex,csv}`)
-shows *Conditional (dr)*. The event-study **figure** shows all three columns.
-The main `.csv` is the union of all estimated columns (no estimate lost to the
-display split). A `dr` overlap diagnostic prints treated-N per surviving cohort
-for every `dr` conditional cell and warns when a contributing cohort has `< 10`
-treated.
+**Two specs per main frame:** the **conditional doubly-robust** spec
+(`xformla = XFORMLA_CS`, `est_method = "dr"`) is the **primary/headline**
+column, shown first; **unconditional** (`xformla = NULL`) is a comparison
+column. There is no reg/dr split or appendix twin — conditional dr is the
+single conditional column. Secondary outcomes (D–F: corporate/private/ICE)
+also use the conditional-dr spec. A `dr` overlap diagnostic prints treated-N
+per surviving cohort and warns when a contributing cohort has `< 10` treated.
 
 **Sections:**
 
 | Section | Frame | Control | Columns | Files |
 |---|---|---|---|---|
-| A Main | direct | nevertreated | uncond, cond(reg), cond(dr) | `es_main_direct.*`, `es_main_direct_dr.*` |
-| B Main | broad | nevertreated | uncond, cond(reg), cond(dr) | `es_main_broad.*`, `es_main_broad_dr.*` |
-| C Robustness | direct (ever-treated only) | notyettreated | uncond, reg, dr | `es_robust_notyet.*`, `es_robust_notyet_dr.*` |
-| D | direct | nevertreated | Corporate BEV (uncond) | `es_corp.*` |
-| E | direct | nevertreated | Private BEV (uncond) | `es_priv.*` |
-| F | direct | nevertreated | ICE placebo (uncond) | `es_ice.*` |
+| A+B Combined | direct + broad | nevertreated | cond(dr, primary), uncond × 2 frames | `tab_es_main_combined.*`, `es_main_combined.png` |
+| C Robustness | direct (ever-treated only) | notyettreated | cond(dr, primary), uncond | `es_robust_notyet.*` |
+| D | direct | nevertreated | Corporate BEV (cond dr) | `es_corp.*` |
+| E | direct | nevertreated | Private BEV (cond dr) | `es_priv.*` |
+| F | direct | nevertreated | ICE placebo (cond dr) | `es_ice.*` |
 
-Each section produces: `<stem>.png` (event-study graph, all estimable columns,
-simultaneous CI, 300 dpi via ragg), `<stem>.tex` (longtblr event-study table),
-`<stem>.csv` (twin). Conditional sections also produce the `<stem>_dr.{tex,csv}`
-appendix twin. Plus `est_att_main.csv` — one row per estimated cell with an
-`est_method` column (uncond rows appear once, not duplicated reg/dr).
+Sections A and B are estimated separately but only written as a single combined
+four-column table + 2×2 graph. Each section C–F produces: `<stem>.png` (event-study
+graph), `<stem>.tex` (longtblr table), `<stem>.csv` (twin). Plus `est_att_main.csv`
+— one row per estimated cell with an `est_method` column.
 
 **Pre-treatment test:** the `did` package's own joint Wald χ² of H₀ that all
 pre-treatment ATT(g,t) = 0 (`cs$W` / `cs$Wpval`, AGS5-clustered multiplier
@@ -269,64 +263,73 @@ CSV records `pre_test_method` (`joint_wald` / `unavailable` / `no_pre_periods`)
 so each row's source is auditable.
 
 **Display horizon:** `es_max_data_driven()` caps `max_e` at the largest `e`
-supported by `≥ MIN_COHORTS_PER_E` cohorts (evaluates to 4 for the direct
-frame post-drop at the default `MIN_COHORTS_PER_E = 3`).
+supported by `≥ MIN_COHORTS_PER_E` cohorts (evaluates to 3 for the direct
+frame post-drop at the default `MIN_COHORTS_PER_E = 3`, because KBA flows
+only run to 2022 so the earliest cohort has no e=4 observation).
 
 **A1 guard:** verifies the (post-drop) estimation sample has never-treated
 > 50% of rows and > 1000 units.
 
 **`04_did_robustness.R` has been deleted** — its content is now fully
-contained in section C of `03_did_main.R`.
+contained in section C of `04_did_main.R`.
 
-### `05_heterogeneity.R`
+### `05_did_anticipation.R`
 
-Tercile-stratified CS on `bev_neuzulassungen_p100k`. Splits treated and
-control units by `sk_base_terc` (Steuerkraft / tax capacity) — the **only**
-wealth ranking; Kaufkraft is deliberately excluded from the DiD heterogeneity.
-Plus treat-type heterogeneity on the broad frame. Uses unconditional CS to
-match the headline spec.
+**Anticipation robustness** for the headline direct-frame conditional DR spec.
+Reruns `att_gt` three times with `anticipation ∈ {0, 1, 2}`, where `k = 0`
+is identical to section A of `04_did_main.R`. Under `anticipation = k`, the
+estimator treats event times `e ∈ {−k, …, −1}` as potentially anticipatory
+and excludes them from the pre-trend Wald test; only `e ≤ −(k+1)` are "clean"
+pre-treatment. Does NOT modify `_did_helpers.R`; instead extends `COL_LABELS`
+locally and calls `att_gt` directly to pass the `anticipation` argument.
+
+Outputs in `03_output/05_did_anticipation/`:
+- `es_anticipation.{png,tex,csv}` — 3-column event study (k = 0, 1, 2)
+- `est_att_anticipation.csv` — overall ATT per spec
+
+### `06_heterogeneity.R`
+
+**Conditional** CS on `bev_neuzulassungen_p100k` (broad frame, never-treated
+control), within four cuts: terciles of `sk_base_terc` (Steuerkraft, headline;
+Kaufkraft excluded) and `dens_base_terc` (density); East/West (`east`); and
+pre/post-2021 FRL regime cohorts. Within a rank split the **stratifying baseline
+is dropped** from the covariate set (`xformla_for_rank()`). Cells use
+`est_method = "reg"` (the DR propensity is singular in these subsets), `bstrap =
+FALSE`; AGS5-clustered SEs are reconstructed from the unit-level influence
+function. Between-group differences (T3−T1, West−East, Post−Pre) use a
+**clustered multiplier bootstrap** that shares one per-AGS5 Mammen weight across
+the two groups (`diff_cluster_mboot`; `diff_cluster_npboot` cross-checks). Plus
+treat-type heterogeneity (conditional).
 
 Outputs via `write_longtblr()`:
-- `did_heterogeneity_terciles.{tex,csv}`
-- `tab_diff_top_bottom_sk.csv` (top–bottom Steuerkraft tercile difference)
+- `did_heterogeneity_terciles.{tex,csv}` (Steuerkraft + density terciles)
+- `did_heterogeneity_groups.{tex,csv}` (East/West, Pre/Post-2021)
+- `tab_het_diffs.{tex,csv}` (between-group differences, clustered bootstrap)
 - `did_heterogeneity_treat_type.{tex,csv}`
 
-### `06_spillovers.R`
+### `07_spillovers.R`
 
-Two SUTVA probes on the **direct frame** (sharp Gemeinde-level treatment —
+SUTVA probe on the **direct frame** (sharp Gemeinde-level treatment —
 adjacency-based spillover is mechanically coherent there; the broad frame is
 not used for spillovers because broad treatment is Kreis-level coverage and
 does not map onto Gemeinde adjacency):
 
-1. **Donut:** rerun the headline direct CS (direct frame, never-treated control,
-   unconditional — replicates `03_did_main.R` section A exactly on the full
-   frame) after dropping never-treated controls whose 1st-order Gemeinde
-   neighbour was directly treated (`direct_treated_any_nbrs_gem_1 == 1L`).
-   Survival of the headline ATT indicates control contamination isn't driving
-   it. (Realised: drops ≈1,028 controls, keeps ≈6,064; simple ATT 30.6 → 34.3
-   per 100k — effect survives.)
-2. **Descriptive spillover ES:** among never-direct-treated only,
-   pseudo-treatment = first year a 1st-order Gemeinde neighbour appears as
-   directly treated (`direct_treated_any_nbrs_gem_1`); **CS** event study
-   (CS only — BJS was dropped pipeline-wide), dynamic aggregation with
-   simultaneous bands. Descriptive only — selection-on-geography caveat;
-   never reported as causal.
+**Donut:** rerun the headline direct CS (direct frame, never-treated control,
+conditional dr — replicates `04_did_main.R` section A on the trimmed pool)
+after dropping never-treated controls whose 1st-order Gemeinde neighbour was
+directly treated (`direct_treated_any_nbrs_gem_1 == 1L`). Survival of the
+headline ATT indicates control contamination isn't driving it.
 
-Both probes run through the **shared CS machinery** in `_did_helpers.R`
-(`run_spec` → `emit_section`), so their outputs are byte-identical in format to
+Runs through the **shared CS machinery** in `_did_helpers.R`
+(`run_spec` → `emit_section`), so outputs are byte-identical in format to
 the main DiD sections — only the sample differs. Outputs in
-`04_results/06_spillovers/`:
+`03_output/07_spillovers/`:
 
 | Stem | Content |
 |---|---|
-| `es_donut.{png,tex,csv}`     | Donut event study (single column, main-spec format) |
-| `es_spillover.{png,tex,csv}` | Descriptive spillover event study (same format) |
-| `est_att_spillover.csv`      | Overall ATTs (same schema as `est_att_main.csv`) |
+| `es_donut.{png,tex,csv}`  | Donut event study (single column, main-spec format) |
+| `est_att_spillover.csv`   | Overall ATT (same schema as `est_att_main.csv`) |
 
-### `07_assemble.R`
-
-Globs `04_results/**/est_att_*.csv` and `04_results/**/tab_*.csv` into one
-manifest. Cheap; run last; no estimation.
 
 ## Economic identifying logic
 
@@ -338,17 +341,17 @@ EMK application/award; documents which Gemeinde characteristics raise the
 per-year onset probability. Used as evidence for selection on observables.
 
 **Part (ii) — what does funding do (adoption response)?** Staggered DiD
-(`03_did_main.R`, heterogeneity in 05, SUTVA in 06). Treatment is the year
+(`04_did_main.R`, heterogeneity in 06, SUTVA in 07). Treatment is the year
 a Gemeinde is first covered by an EMK project. Outcome is BEV new
-registrations per 100k (level). Primary estimator: CS unconditional
-(`xformla = NULL`); conditional variant (`xformla = XFORMLA_CS`) shown as
-a second column in every table for comparison. Robustness (not-yet-treated
-control group) is section C of `03_did_main.R`.
+registrations per 100k (level). Primary estimator: CS **conditional**
+doubly-robust (`xformla = XFORMLA_CS`, `est_method = "dr"`); the unconditional
+variant (`xformla = NULL`) is shown as a comparison column. Robustness (not-yet-treated
+control group) is section C of `04_did_main.R`.
 
-**Heterogeneity** (`05`) reports the inequality payoff: does the funded ATT
+**Heterogeneity** (`06`) reports the inequality payoff: does the funded ATT
 differ by baseline Kaufkraft tercile?
 
-**Spillovers** (`06`) probe SUTVA: do never-treated controls with treated
+**Spillovers** (`07`) probe SUTVA: do never-treated controls with treated
 neighbours behave differently from clean controls?
 
 ## When iterating
@@ -358,5 +361,5 @@ neighbours behave differently from clean controls?
 - **Bootstrap is the time sink** in CS. Asymptotic-only (`bstrap = FALSE`)
   is fine for iteration; flip back for the final run.
 - **`notyettreated` is more expensive than `nevertreated`** because the
-  comparison pool changes per period; section C of `03_did_main.R` runs it
+  comparison pool changes per period; section C of `04_did_main.R` runs it
   on the ever-treated subsample only. Use `nevertreated` while iterating.

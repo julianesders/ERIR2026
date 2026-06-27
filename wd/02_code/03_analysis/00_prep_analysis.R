@@ -17,7 +17,7 @@
 # AGS8 per covariate) used as a time-invariant covariate set for CS-dr and for
 # tercile stratification in heterogeneity.
 #
-# Outputs (04_results/00_prep_analysis/):
+# Outputs (03_output/00_prep_analysis/):
 #   tab_cohorts.{tex,csv}   — onsets per year × {broad, direct}, pre/post counts
 #   prep_log.txt            — provenance log: n, dropped, base-year choices
 # ───────────────────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ self <- if (length(self_flag)) {
 root       <- dirname(dirname(dirname(self)))
 code_dir   <- file.path(root, "02_code")
 data_final <- file.path(root, "01_data", "03_final")
-out_dir    <- file.path(root, "04_results", "00_prep_analysis")
+out_dir    <- file.path(root, "03_output", "00_prep_analysis")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 source(file.path(code_dir, "03_analysis", "_dict.R"))
 
@@ -72,6 +72,9 @@ panel[, AGS2 := sprintf("%02d", as.integer(AGS2))]
 
 # Stadtstaaten flag (kept as column, not a separate frame)
 panel[, ns_flag := !(AGS2 %in% STADTSTAATEN)]
+# East Germany indicator (neue Länder incl. Berlin); constant within AGS8, so it
+# propagates into every frame for the East/West heterogeneity cut.
+panel[, east := as.integer(AGS2 %in% EAST_AGS2)]
 
 # Year filter: trim pre-MIN_YEAR rows. Baseline snapshot (BASE_WINDOW = 2014–
 # 2016) and hazard z-scoring (year >= START_YEAR = 2015) are both unaffected.
@@ -82,24 +85,6 @@ panel <- panel[year >= MIN_YEAR]
 cat(sprintf("MIN_YEAR=%d filter: -%d rows; panel years now %d-%d\n",
             MIN_YEAR, .n_pre - nrow(panel),
             min(panel$year), max(panel$year)))
-
-# Early-treatment hygiene: EMK projects can begin before MIN_YEAR (e.g. some
-# 2008-09 projects). Those units would otherwise appear "always-treated" in
-# the post-MIN_YEAR frame, which CS/BJS handle poorly. NA-out their treatment
-# year so they are reclassified as untreated controls. Print counts so it's
-# transparent how many units are affected.
-.early_direct <- panel[first_treat_direct < MIN_YEAR, uniqueN(AGS8)]
-.early_broad  <- panel[first_treat_broad  < MIN_YEAR, uniqueN(AGS8)]
-if (.early_direct > 0L || .early_broad > 0L) {
-  cat(sprintf("Pre-MIN_YEAR treatment: %d AGS8 with first_treat_direct < %d, ",
-              .early_direct, MIN_YEAR))
-  cat(sprintf("%d with first_treat_broad < %d. Reclassified as untreated.\n",
-              .early_broad, MIN_YEAR))
-  panel[first_treat_direct < MIN_YEAR, first_treat_direct := NA_integer_]
-  panel[first_treat_broad  < MIN_YEAR, first_treat_broad  := NA_integer_]
-  panel[is.na(first_treat_direct) & is.na(first_treat_broad),
-        treat_type := "never"]
-}
 
 # Data-quality filter: drop very small Gemeinden. KBA registers vehicles at
 # the holder's HQ AGS8; leasing companies / Großkunden-Halter incorporated in
@@ -136,12 +121,17 @@ for (.c in .winsor_cols) {
               .c, .cap, WINSOR_Q, .n_capped))
 }
 
-# log1p twins of the per-100k outcomes for proportional-effect specifications.
-# log1p handles the floor of zeros (many small Gemeinden have 0 new BEVs in
-# early years); the level reads as "additional registrations per 100k", the
-# log1p reads as approximate percent change in the rate.
-for (.c in .winsor_cols) {
-  panel[, (paste0("log1p_", .c)) := log1p(pmax(get(.c), 0))]
+# BEV market share in percentage points (winsorised at WINSOR_Q = 0.99).
+# N_ev_share_overall = N_elektro_overall / N_total_overall (pure BEV, code 04).
+# Missing 2010-2012 and 2023 (KBA flow data not available); zeros are genuine
+# (municipalities with no BEV registrations that year). The 99th-pct cap
+# (~44.4 pp) removes small-denominator artifacts (e.g. 1/1 or 2/2 registrations).
+{
+  .cap_share <- quantile(panel$N_ev_share_overall, WINSOR_Q, na.rm = TRUE)
+  .n_cap_sh  <- panel[!is.na(N_ev_share_overall) & N_ev_share_overall > .cap_share, .N]
+  panel[, bev_share_pct := pmin(N_ev_share_overall, .cap_share) * 100]
+  cat(sprintf("Created bev_share_pct: winsorised at %.1f pp (q99=%.3f, %d cells capped)\n",
+              .cap_share * 100, .cap_share, .n_cap_sh))
 }
 
 # Optional cohort cap: censor units whose first-treat exceeds MAX_COHORT.
@@ -159,12 +149,10 @@ cat(sprintf("  ever-broad: %d | ever-direct: %d | never: %d\n",
             uniqueN(panel[treat_type == "never",      AGS8])))
 
 # -- Baseline snapshot per AGS8 ------------------------------------------------
-# Per-variable earliest available year in BASE_WINDOW (Kaufkraft coverage may
-# start late, so we take the per-variable earliest year). Records which year
+# Per-variable earliest available year in BASE_WINDOW. Records which year
 # was used per variable in the provenance log.
 
 base_vars <- c(
-  kk_base          = "log_kaufkraft",
   sk_base          = "log_steuerkraft",
   dens_base        = "log_pop_dens",
   bev_base         = "bev_stock_p100k",
@@ -189,9 +177,10 @@ for (nm in names(base_vars)) {
   year_log[[nm]] <- d[, .N, by = c(yr_col)][order(get(yr_col))]
 }
 
-# log1p transforms for the BEV / charging baselines (snapshots, not yet z'd)
-base_dt[, bev_base   := log1p(pmax(bev_base,   0))]
-base_dt[, chg_base   := log1p(pmax(chg_base,   0))]
+# Sqrt BEV / charging baselines (consistent with how bev_z / chg_z enter
+# the hazard model; sqrt(0) = 0 so the zero mass is preserved).
+base_dt[, bev_base   := sqrt(pmax(bev_base,   0))]
+base_dt[, chg_base   := sqrt(pmax(chg_base,   0))]
 
 # Population-weighted and unweighted tercile / quintile cuts on baseline KK & SK
 .qcut <- function(v, w = NULL, n = 5L) {
@@ -206,7 +195,9 @@ base_dt[, chg_base   := log1p(pmax(chg_base,   0))]
   }
 }
 
-for (nm in c("kk_base", "sk_base")) {
+# Tercile / quintile cuts: tax capacity (Steuerkraft, headline inequality rank)
+# and population density (new heterogeneity cut).
+for (nm in c("sk_base", "dens_base")) {
   base_dt[, paste0(nm, "_q5")      := .qcut(get(nm), n = 5L)]
   base_dt[, paste0(nm, "_terc")    := .qcut(get(nm), n = 3L)]
   base_dt[, paste0(nm, "_q5_pw")   := .qcut(get(nm), w = pop_base, n = 5L)]
@@ -214,11 +205,27 @@ for (nm in c("kk_base", "sk_base")) {
 }
 
 # z-scored baselines (on the AGS8 cross-section); kept as time-invariant covs
-for (nm in c("kk_base", "sk_base", "dens_base",
+for (nm in c("sk_base", "dens_base",
              "bev_base", "chg_base",
              "green_base", "state_green_base")) {
   base_dt[, paste0(nm, "_z") := z(get(nm))]
 }
+
+# CS-dr xformla covariates: recompute sk_base_z, dens_base_z, state_green_base_z
+# as per-AGS8 means over CS_BASE_WINDOW = 2013:2015 (one year earlier than the
+# balance-table window), then z-score on the cross-section. bev_base_z and
+# chg_base_z stay on the original BASE_WINDOW since they are not in XFORMLA_CS.
+CS_BASE_WINDOW <- 2013:2015
+cs_snap <- panel[year %in% CS_BASE_WINDOW,
+                 .(sk_cs = mean(log_steuerkraft, na.rm = TRUE),
+                   dn_cs = mean(log_pop_dens,    na.rm = TRUE),
+                   sg_cs = mean(state_gruene,     na.rm = TRUE)),
+                 by = AGS8]
+base_dt <- merge(base_dt, cs_snap, by = "AGS8", all.x = TRUE)
+base_dt[, sk_base_z          := z(sk_cs)]
+base_dt[, dens_base_z        := z(dn_cs)]
+base_dt[, state_green_base_z := z(sg_cs)]
+base_dt[, c("sk_cs", "dn_cs", "sg_cs") := NULL]
 
 cat(sprintf("Baseline snapshot: %d AGS8 with at least one base var\n", nrow(base_dt)))
 
@@ -228,7 +235,7 @@ cat(sprintf("Baseline snapshot: %d AGS8 with at least one base var\n", nrow(base
 # subset. Print counts; if green_base is the binding loser, swap in a fallback
 # from state_gruene baseline.
 cat("\nBaseline covariate NA counts (relevant to CS sample):\n")
-.diag_cols <- c("kk_base_z", "sk_base_z", "dens_base_z",
+.diag_cols <- c("sk_base_z", "dens_base_z",
                 "green_base_z", "state_green_base_z",
                 "bev_base_z", "chg_base_z")
 for (.c in .diag_cols) {
@@ -299,7 +306,7 @@ fwrite(ph_cov, file.path(data_final, "frame_hazard_cov.csv"))
 # -- Logit-counterfactual frames (full panel, no risk-set censoring) ----------
 # Same year >= START_YEAR floor and all other filters; post-onset AGS8-years
 # are retained. Onset stays a year-of-event indicator (mechanically zero for
-# post-onset years). Consumed by 02b_logit_uncensored.R as a plain-logit
+# post-onset years). Consumed by 03_logit_uncensored.R as a plain-logit
 # counterfactual to the discrete-time hazard.
 
 logit_full <- panel[year >= START_YEAR]
@@ -323,9 +330,7 @@ cat(sprintf(
 fwrite(logit_cov_full, file.path(data_final, "frame_logit_cov_full.csv"))
 
 # -- DiD frames ----------------------------------------------------------------
-# `did` package: gname = 0 for never-treated
-# `didimputation` (BJS) package: gname = Inf for never-treated
-# Integer ags8_id required by both.
+# `did` package: gname = 0 for never-treated. Integer ags8_id required.
 
 panel[, ags8_id := .GRP, by = AGS8]
 
@@ -334,7 +339,7 @@ panel[, ags8_id := .GRP, by = AGS8]
 # unstable DR propensity fits). Units in dropped cohorts are removed ENTIRELY
 # (their rows have gname_cs > 0, so the never-treated pool is untouched; they
 # are NOT reclassified as controls). Applied per-frame because direct and broad
-# have different cohort sizes. Logs the drop and asserts gname_bjs consistency.
+# have different cohort sizes. Logs the drop.
 drop_small_cohorts <- function(frame, label) {
   cohort_n <- frame[gname_cs > 0L, .(n = uniqueN(AGS8)),
                     by = gname_cs][order(gname_cs)]
@@ -354,30 +359,18 @@ drop_small_cohorts <- function(frame, label) {
       "COHORT_MIN=%d [%s]: no cohorts below threshold; all %d retained.\n",
       COHORT_MIN, label, nrow(cohort_n)))
   }
-  # The row-drop removes gname_bjs treated rows too (same rows). Assert the two
-  # treated-codings stay in sync so a future BJS recoding can't silently desync.
-  n_cs  <- frame[gname_cs > 0L, uniqueN(AGS8)]
-  n_bjs <- frame[gname_bjs > 0 & gname_bjs != BJS_NEVER, uniqueN(AGS8)]
-  stopifnot(n_cs == n_bjs)
   frame
 }
 
 frame_did_broad <- copy(panel)
-frame_did_broad[, gname_cs  := fifelse(is.na(first_treat_broad), 0L,
-                                       as.integer(first_treat_broad))]
-# BJS never-treated coding lives in `BJS_NEVER` (_dict.R) so 03/04/06 cannot
-# drift apart. The A1 guard at the top of 03_did_main.R verifies that the
-# untreated estimation sample is non-degenerate; if it is, flip `BJS_NEVER`.
-frame_did_broad[, gname_bjs := fifelse(is.na(first_treat_broad), BJS_NEVER,
-                                       as.numeric(first_treat_broad))]
+frame_did_broad[, gname_cs := fifelse(is.na(first_treat_broad), 0L,
+                                      as.integer(first_treat_broad))]
 frame_did_broad <- drop_small_cohorts(frame_did_broad, "broad")
 fwrite(frame_did_broad, file.path(data_final, "frame_did_broad.csv"))
 
 frame_did_direct <- panel[treat_type != "broadcast_only"]
-frame_did_direct[, gname_cs  := fifelse(is.na(first_treat_direct), 0L,
-                                        as.integer(first_treat_direct))]
-frame_did_direct[, gname_bjs := fifelse(is.na(first_treat_direct), BJS_NEVER,
-                                        as.numeric(first_treat_direct))]
+frame_did_direct[, gname_cs := fifelse(is.na(first_treat_direct), 0L,
+                                       as.integer(first_treat_direct))]
 frame_did_direct <- drop_small_cohorts(frame_did_direct, "direct")
 fwrite(frame_did_direct, file.path(data_final, "frame_did_direct.csv"))
 

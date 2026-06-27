@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # _did_helpers.R — shared Callaway-Sant'Anna estimation + output machinery.
 #
-# Sourced by 03_did_main.R AND 06_spillovers.R (after _dict.R and the
+# Sourced by 04_did_main.R AND 07_spillovers.R (after _dict.R and the
 # data.table / did / ggplot2 libraries are loaded). Contains ONLY definitions —
 # no top-level estimation — so every script that uses CS produces byte-identical
 # event-study figures (es_graph), longtblr tables + CSV twins (write_es_longtblr)
@@ -17,25 +17,25 @@ library(ggplot2)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CS_BITERS    <- 2000L
-OUTCOME_BEV  <- "bev_neuzulassungen_p100k"
-OUTCOME_CORP <- "bev_corporate_p100k"
-OUTCOME_PRIV <- "bev_private_p100k"
-OUTCOME_ICE  <- "ice_neuzulassungen_p100k"
+CS_BITERS   <- 2000L
+OUTCOME_BEV <- "bev_neuzulassungen_p100k"
 
-# Column keys and their display labels (graph facet strips + table headers)
+# Column keys and their display labels (graph facet strips + table headers).
+# Conditional CS (doubly robust) is the PRIMARY spec; unconditional is the
+# comparison column. Order here = left-to-right display order, so conditional
+# prints first.
 COL_LABELS <- c(
+  cond_dr     = "Conditional",
   uncond      = "Unconditional",
-  cond_reg    = "Conditional (reg)",
-  cond_dr     = "Conditional (dr)",
-  nyt_uncond  = "Not-yet-treated (uncond.)",
-  nyt_reg     = "Not-yet-treated (reg)",
-  nyt_dr      = "Not-yet-treated (dr)",
-  corp        = "Corporate BEV",
-  priv        = "Private BEV",
-  ice         = "ICE (placebo)",
+  nyt_dr      = "Not-yet-treated (conditional)",
+  nyt_uncond  = "Not-yet-treated (unconditional)",
   donut       = "Donut (direct frame)",
-  spillover   = "Spillover (descriptive)"
+  spillover   = "Spillover",
+  # Combined-table keys (direct vs broad, used in es_main_combined)
+  dir_cond_dr = "Direct: Conditional",
+  dir_uncond  = "Direct: Unconditional",
+  brd_cond_dr = "Broad: Conditional",
+  brd_uncond  = "Broad: Unconditional"
 )
 
 # ── Plot theme (matches dual-map colour scheme) ────────────────────────────────
@@ -141,14 +141,6 @@ cs_att_agg <- function(cs_obj) {
 # this is the "P-value for pre-test of parallel trends assumption" the package
 # prints, with Wpval == pchisq(W, df, lower.tail = FALSE) and df = number of
 # pre-treatment (g,t) cells.
-#
-# We report THAT, not a statistic hand-rolled from the stored event-study
-# influence function: `aggte` exposes the dynamic IF as
-# `inf.function$dynamic.inf.func.e`, but its raw cross-product covariance does
-# NOT reproduce the clustered bootstrap SEs (it is ~600x too small), so a
-# hand-rolled Wald would be wildly anti-conservative and spuriously reject. No
-# diagonal fallback. Returns method = "joint_wald" when available,
-# "no_pre_periods" when the design has no pre cells, "unavailable" otherwise.
 cs_pre_test <- function(cs_obj) {
   na_out <- list(stat = NA_real_, df = NA_integer_, pval = NA_real_,
                  method = "unavailable")
@@ -256,14 +248,29 @@ run_spec <- function(dat, yname, xformla, control_group, est_method, label,
        est_method = est_method)
 }
 
+# Default CS event-study figure note (CS-specific; write_fig_tex itself lives in
+# _dict.R as a generic float writer). emit_section uses this unless overridden.
+FIG_NOTE_DEFAULT <- paste0(
+  "Callaway--Sant'Anna (2021) CS event-study estimates with simultaneous ",
+  "95\\% confidence bands (multiplier bootstrap, $B=", CS_BITERS, "$, ",
+  "clustered at county/AGS5); pointwise 95\\% fallback where the simultaneous ",
+  "critical value is unavailable. The dashed vertical line marks the last ",
+  "pre-treatment period; $e$ is years relative to first funding receipt."
+)
+
 # ── ES graph ──────────────────────────────────────────────────────────────────
 # Shows ALL estimable columns for a section side-by-side (the main/appendix
 # split applies to the *tables*, not the figure). Uses simultaneous CI bands
-# (crit.val.egt from aggte with cband = TRUE; pointwise 1.96 fallback).
+# (crit.val.egt from aggte with cband = TRUE; pointwise 1.96 fallback). The plot
+# carries no title/caption — those go in the companion .tex (write_fig_tex).
+# `width`/`height` (inches) override the per-panel defaults; pass them for the
+# combined 2x2 main figure so it lays out as a wide A4-friendly rectangle.
 
 es_graph <- function(es_list, file,
-                     ylab  = "ATT (BEV new registrations per 100k)",
-                     title = NULL) {
+                     ylab   = "ATT (BEV new registrations per 100k)",
+                     ncol   = NULL,
+                     width  = NULL,
+                     height = NULL) {
   dt_list <- lapply(names(es_list), function(nm) {
     ea <- es_list[[nm]]
     if (is.null(ea)) return(NULL)
@@ -280,12 +287,14 @@ es_graph <- function(es_list, file,
   if (nrow(dt) == 0L) {
     cat("  es_graph: no data for", file, "\n"); return(invisible(NULL))
   }
+  # Re-enforce COL_LABELS ordering after rbindlist (which may coerce factors)
+  present <- unique(as.character(dt$spec))
+  ordered_specs <- as.character(COL_LABELS[COL_LABELS %in% present])
+  dt[, spec := factor(as.character(spec), levels = ordered_specs)]
 
-  n_panels <- uniqueN(dt$spec)
-  cap <- paste0(
-    "Simultaneous 95% CI (multiplier bootstrap, B=", CS_BITERS,
-    ", AGS5 cluster). Callaway-Sant'Anna estimator."
-  )
+  n_panels  <- uniqueN(dt$spec)
+  ncol_use  <- if (!is.null(ncol)) ncol else n_panels
+  nrow_use  <- ceiling(n_panels / ncol_use)
 
   p <- ggplot(dt, aes(x = e)) +
     geom_hline(yintercept = 0, colour = "grey60", linewidth = 0.35) +
@@ -297,16 +306,14 @@ es_graph <- function(es_list, file,
               colour = PLOT_BLUE, linewidth = 0.75) +
     geom_point(aes(y = estimate),
                colour = PLOT_BLUE, size = 1.8) +
-    facet_wrap(~ spec, ncol = n_panels, scales = "free_y") +
-    labs(x     = "Years relative to first funding receipt",
-         y     = ylab,
-         title = title,
-         caption = cap) +
+    facet_wrap(~ spec, ncol = ncol_use, scales = "free_y") +
+    labs(x = "Years relative to first funding receipt",
+         y = ylab) +
     theme_es +
     theme(plot.background = element_rect(fill = "white", colour = NA))
   ggsave(file, p,
-         width  = 3.5 * n_panels + 1.5,
-         height = 4.5,
+         width  = if (!is.null(width))  width  else 3.5 * ncol_use + 1.5,
+         height = if (!is.null(height)) height else 4.5 * nrow_use,
          dpi    = 300,
          device = ragg::agg_png)
   invisible(NULL)
@@ -317,9 +324,9 @@ es_graph <- function(es_list, file,
 .st <- function(b, s) {
   p <- 2 * pnorm(abs(b / s), lower.tail = FALSE)
   ifelse(is.na(p), "",
-    ifelse(p < 0.01, "***",
-      ifelse(p < 0.05, "**",
-        ifelse(p < 0.1, "*", ""))))
+    ifelse(p < 0.01, "$^{***}$",
+      ifelse(p < 0.05, "$^{**}$",
+        ifelse(p < 0.1, "$^{*}$", ""))))
 }
 .f3 <- function(x) ifelse(is.na(x) | !is.finite(x), "--",
                            sprintf("%.3f", x))
@@ -334,7 +341,8 @@ es_graph <- function(es_list, file,
 write_es_longtblr <- function(es_list, att_list, pre_tests,
                               n_treated, n_control, est_methods,
                               stem, caption, label, note,
-                              display_cols = names(es_list)) {
+                              display_cols = names(es_list),
+                              resize = FALSE) {
   col_nms  <- names(es_list)          # all estimated columns -> CSV (union)
   disp_nms <- display_cols            # displayed columns      -> TeX
   hdrs     <- COL_LABELS[disp_nms]
@@ -347,7 +355,7 @@ write_es_longtblr <- function(es_list, att_list, pre_tests,
   )))
 
   # Header
-  hdr_row <- paste0(paste(c("$e$", hdrs), collapse = " & "), " \\\\")
+  hdr_row <- paste0(paste(c("Relative period", hdrs), collapse = " & "), " \\\\")
 
   # Body rows
   body <- character(0)
@@ -405,13 +413,7 @@ write_es_longtblr <- function(es_list, att_list, pre_tests,
                    character(1))),
           collapse = " & "), " \\\\",
     "\\hline",
-    paste(c("Pre-test $\\chi^2$ (joint Wald)",
-            vapply(disp_nms, .pt_field, character(1), field = "stat")),
-          collapse = " & "), " \\\\",
-    paste(c("\\quad $df$",
-            vapply(disp_nms, .pt_field, character(1), field = "df")),
-          collapse = " & "), " \\\\",
-    paste(c("\\quad $p$-value",
+    paste(c("Pre-test $p$-value",
             vapply(disp_nms, .pt_field, character(1), field = "pval")),
           collapse = " & "), " \\\\"
   )
@@ -421,10 +423,11 @@ write_es_longtblr <- function(es_list, att_list, pre_tests,
     caption     = caption,
     label       = label,
     note        = note,
-    colspec     = sprintf("r *{%d}{r}", n_cols),
+    colspec     = sprintf("l *{%d}{l}", n_cols),
     header_rows = hdr_row,
     body_rows   = body,
-    footer_rows = foot
+    footer_rows = foot,
+    resize      = resize
   )
 
   # CSV twin — union of ALL estimated columns (incl. dr).
@@ -492,14 +495,29 @@ emit_section <- function(results, ems,
                          main_display = names(results),
                          dr_key = NULL, dr_stem = NULL,
                          dr_caption = NULL, dr_label = NULL, dr_note = NULL,
-                         ylab = "ATT (BEV new registrations per 100k)") {
+                         ylab = "ATT (BEV new registrations per 100k)",
+                         plot = TRUE,
+                         ncol = NULL,
+                         fig_caption = NULL, fig_label = NULL,
+                         fig_note = FIG_NOTE_DEFAULT,
+                         fig_width = NULL, fig_height = NULL) {
   es  <- lapply(results, `[[`, "es_agg")
   att <- lapply(results, `[[`, "att_agg")
   pre <- lapply(results, `[[`, "pre_tst")
   ntr <- lapply(results, `[[`, "n_treated")
   nco <- lapply(results, `[[`, "n_control")
 
-  es_graph(es_list = es, file = graph_file, ylab = ylab, title = graph_title)
+  if (plot) {
+    es_graph(es_list = es, file = graph_file, ylab = ylab, ncol = ncol,
+             width = fig_width, height = fig_height)
+    write_fig_tex(
+      img_file = graph_file,
+      caption  = if (!is.null(fig_caption)) fig_caption else graph_title,
+      label    = if (!is.null(fig_label)) fig_label
+                 else sub("^tab:", "fig:", main_label),
+      note     = fig_note
+    )
+  }
 
   write_es_longtblr(
     es_list = es, att_list = att, pre_tests = pre,
